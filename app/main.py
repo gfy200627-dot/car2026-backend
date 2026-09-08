@@ -32,10 +32,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：前端 localhost:5173
+# CORS：本地开发 + Vercel 生产域名
+# 生产域名可能由 Vercel 自动生成，因此同时允许 *.vercel.app。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https://([a-zA-Z0-9-]+\.)*vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
