@@ -96,8 +96,12 @@ class OperationLog(TimestampMixin, Base):
     __tablename__ = "operation_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True, comment="用户 ID"
+    # 日志需要允许保留在用户被删除后，SET NULL 才有实际意义。
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="用户 ID",
     )
     action: Mapped[str] = mapped_column(String(64), index=True, comment="操作类型")
     module: Mapped[str] = mapped_column(String(32), index=True, comment="模块")
