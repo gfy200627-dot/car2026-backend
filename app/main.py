@@ -12,7 +12,6 @@ from app.core.envelope import (
     BizError,
     biz_error_handler,
     envelope,
-    error_envelope,
     http_exception_handler,
     unhandled_exception_handler,
     validation_exception_handler,
@@ -32,15 +31,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：本地开发 + Vercel 生产域名
-# 生产域名可能由 Vercel 自动生成，因此同时允许 *.vercel.app。
+# CORS：只使用明确的可信 Origin，避免正则 Origin 与生产环境配置叠加时产生
+# 不规范/重复的 Access-Control-Allow-Origin 响应头。
+# 生产前端：Netlify；本地开发：Vite。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_origin_regex=r"https://([a-zA-Z0-9-]+\.)*vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 # 异常处理器
