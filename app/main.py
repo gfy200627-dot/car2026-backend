@@ -31,9 +31,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：只使用明确的可信 Origin，避免正则 Origin 与生产环境配置叠加时产生
-# 不规范/重复的 Access-Control-Allow-Origin 响应头。
-# 生产前端：Netlify；本地开发：Vite。
+# CORS：只允许明确配置的可信 Origin，避免重复或非法的
+# Access-Control-Allow-Origin 响应头。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -72,7 +71,6 @@ async def envelope_middleware(request: Request, call_next):
     except (ValueError, TypeError):
         return Response(content=body, status_code=response.status_code, media_type="application/json")
     if isinstance(payload, dict) and "code" in payload:
-        # 已是 envelope（异常处理器/健康检查等），避免双重包裹
         return Response(content=body, status_code=response.status_code, media_type="application/json")
 
     wrapped = json.dumps(envelope(data=payload), ensure_ascii=False).encode("utf-8")
