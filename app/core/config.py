@@ -33,7 +33,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [o.strip() for o in self.BACKEND_CORS_ORIGINS.split(",") if o.strip()]
+        """返回可信 CORS Origins，并确保生产前端不会被旧环境变量覆盖。"""
+        origins = [
+            o.strip().rstrip("/")
+            for o in self.BACKEND_CORS_ORIGINS.split(",")
+            if o.strip()
+        ]
+        production_origin = "https://shengchan.netlify.app"
+        if production_origin not in origins:
+            origins.append(production_origin)
+        return origins
 
     @property
     def latest_month_str(self) -> str:
