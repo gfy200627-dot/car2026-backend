@@ -17,8 +17,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 720
 
-    # CORS
-    BACKEND_CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # CORS：本地开发 + 生产 Netlify 前端
+    BACKEND_CORS_ORIGINS: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "https://shengchan.netlify.app"
+    )
 
     # 应用
     APP_ENV: str = "development"
