@@ -1,11 +1,10 @@
 """Alembic 配置"""
 
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 from app.core.config import settings
-from app.database.session import Base
+from app.database.session import Base, engine
 from app.models import (
     admin,
     brand,
@@ -36,12 +35,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        {"sqlalchemy.url": settings.DATABASE_URL},
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-    with connectable.connect() as connection:
+    # 直接复用应用数据库 engine，确保 Alembic 与 SQLAlchemy 使用完全一致的
+    # Aiven/Render SSL 参数，避免 engine_from_config 绕过 session.py 的 SSL 配置。
+    with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
