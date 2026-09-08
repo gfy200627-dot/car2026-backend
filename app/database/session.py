@@ -10,10 +10,10 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.core.config import settings
 
 
-def _database_connect_args(database_url: str) -> dict:
-    """Build DBAPI connection args, including Render/Aiven CA configuration."""
+def _database_connect_args(database_url: str):
+    """Build DBAPI connection args and normalize Render/Aiven CA settings."""
     if database_url.startswith("sqlite"):
-        return {"check_same_thread": False}
+        return {"check_same_thread": False}, database_url
 
     connect_args: dict = {}
     if database_url.startswith("mysql+pymysql://"):
@@ -28,8 +28,8 @@ def _database_connect_args(database_url: str) -> dict:
                     "ca": str(ca_file),
                     "check_hostname": query.get("ssl_verify_identity", "true").lower() == "true",
                 }
-                # PyMySQL consumes SSL settings from connect_args. Remove them from
-                # the URL so SQLAlchemy does not pass them as unrelated DBAPI args.
+                # PyMySQL consumes SSL settings from connect_args. Remove these
+                # SSL-only URL parameters before handing the URL to SQLAlchemy.
                 query.pop("ssl_ca", None)
                 query.pop("ssl_verify_cert", None)
                 query.pop("ssl_verify_identity", None)
