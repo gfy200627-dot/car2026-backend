@@ -42,7 +42,7 @@ def _dt_str(d: Optional[datetime]) -> Optional[str]:
 # ============================ 概览 ============================
 
 @router.get("/admin/overview", summary="后台概览")
-def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
+def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(require_roles("admin"))) -> dict:
     months = available_months(db)
     if not months:
         return {
@@ -107,7 +107,7 @@ def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(
 
 
 @router.get("/admin/sales-trend", summary="后台销售趋势")
-def admin_sales_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
+def admin_sales_trend(db: Session = Depends(get_db), current: UserSchema = Depends(require_roles("admin"))) -> dict:
     months = available_months(db)[-12:]
     sales_rows = dict(
         (m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7], int(s or 0))
@@ -133,7 +133,7 @@ def _orders_by_month(db: Session) -> dict[str, int]:
 
 
 @router.get("/admin/order-status", summary="订单状态分布")
-def admin_order_status(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> list:
+def admin_order_status(db: Session = Depends(get_db), current: UserSchema = Depends(require_roles("admin"))) -> list:
     rows = db.query(Order.status, F.count(Order.id)).group_by(Order.status).all()
     counts = {status: int(c or 0) for status, c in rows}
     return [
@@ -148,7 +148,7 @@ def admin_order_status(db: Session = Depends(get_db), current: UserSchema = Depe
 def admin_car_ranking(
     limit: int = 8,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> list:
     """基于 CarSales 真实月度聚合（最近 12 个月），不使用 Car.sales_12m 缓存字段"""
     months = available_months(db)[-12:]
@@ -171,7 +171,7 @@ def admin_car_ranking(
 
 
 @router.get("/admin/inventory-trend", summary="库存趋势")
-def admin_inventory_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
+def admin_inventory_trend(db: Session = Depends(get_db), current: UserSchema = Depends(require_roles("admin"))) -> dict:
     months = available_months(db)[-12:]
     if not months:
         return {"months": [], "data": []}
@@ -217,7 +217,7 @@ def admin_users(
     role: Optional[str] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> dict:
     q = db.query(User)
     if keyword:
@@ -293,7 +293,7 @@ def admin_brands(
     sortBy: Optional[str] = None,
     sortOrder: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> dict:
     items = [_brand_to_dict(b) for b in db.query(Brand).all()]
     if keyword:
@@ -316,7 +316,7 @@ def admin_cars(
     sortBy: Optional[str] = None,
     sortOrder: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> dict:
     q = db.query(Car).options(joinedload(Car.brand_rel))
     if keyword:
@@ -346,7 +346,7 @@ def admin_sales(
     pageSize: int = 10,
     span: int = 12,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> dict:
     months = available_months(db)[-min(max(span, 1), 500):]
 
@@ -407,7 +407,7 @@ def admin_inventory(
     sortBy: Optional[str] = None,
     sortOrder: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin", "sales")),
 ) -> dict:
     rows = db.query(Inventory, Car, Brand.name).join(Car, Car.id == Inventory.car_id).join(
         Brand, Brand.id == Car.brand_id
@@ -448,7 +448,7 @@ def admin_orders(
     keyword: Optional[str] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin", "sales")),
 ) -> dict:
     q = db.query(Order, Car, Brand.name).join(Car, Car.id == Order.car_id).join(Brand, Brand.id == Car.brand_id)
     rows = q.all()
@@ -486,7 +486,7 @@ def _algo_to_dict(t: AlgorithmTask) -> dict:
 @router.get("/admin/algorithms", summary="算法任务列表")
 def admin_algorithms(
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> list:
     return [_algo_to_dict(t) for t in db.query(AlgorithmTask).order_by(AlgorithmTask.id).all()]
 
@@ -531,7 +531,7 @@ def admin_logs(
     module: Optional[str] = None,
     result: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> dict:
     q = db.query(OperationLog).options(joinedload(OperationLog.user_rel))
     rows = q.order_by(OperationLog.id.desc()).all()
@@ -567,7 +567,7 @@ def _file_to_dict(f: DataFile) -> dict:
 def admin_data_files(
     type: Optional[str] = None,
     db: Session = Depends(get_db),
-    current: UserSchema = Depends(get_current_user),
+    current: UserSchema = Depends(require_roles("admin")),
 ) -> list:
     q = db.query(DataFile)
     if type and type != "all":

@@ -6,7 +6,7 @@ import httpx
 
 BASE = "http://127.0.0.1:8001/api"
 c = httpx.Client(timeout=30)
-token = c.post(f"{BASE}/auth/login", json={"username": "admin", "password": "admin123"}).json()["token"]
+token = c.post(f"{BASE}/auth/login", json={"username": "admin", "password": "admin123"}).json()["data"]["token"]
 H = {"Authorization": f"Bearer {token}"}
 
 failures = []
@@ -19,7 +19,7 @@ def expect(name, cond, detail=""):
 
 
 # 1. 车型 1 = 秦PLUS 插电混动，指导价 139800 元 → 13.98 万
-car1 = c.get(f"{BASE}/cars/1", headers=H).json()
+car1 = c.get(f"{BASE}/cars/1", headers=H).json()["data"]
 expect("car1=秦PLUS", car1["name"] == "秦PLUS", f'{car1["brand"]} {car1["name"]}')
 expect("car1 price=13.98万", abs(car1["price"] - 13.98) < 1e-6, str(car1["price"]))
 expect("car1 energy=PHEV(增程/插混映射)", car1["energyType"] in ("PHEV", "BEV"), car1["energyType"])
@@ -30,29 +30,29 @@ expect("car1 sales12m=36196", car1["sales"] == 36196, str(car1["sales"]))
 expect("car1 lastMonth=3138", car1["lastMonthSales"] == 3138, str(car1["lastMonthSales"]))
 
 # 2. 预测：carId=61 在爬虫预测的 20 款车型里 → 应直接返回爬虫模型结果
-pred = c.get(f"{BASE}/predict/sales", params={"carId": 61, "horizon": 6}, headers=H).json()
-expect("pred61 用真实模型预测", pred["model"] == "XGBoost（真实模型预测）", pred["model"])
+pred = c.get(f"{BASE}/predict/sales", params={"carId": 61, "horizon": 6}, headers=H).json()["data"]
+expect("pred61 用真实模型预测", pred["model"] == "真实模型预测（导入数据）", pred["model"])
 expect("pred61 首月=2026-07", pred["prediction"][0]["month"] == "2026-07", pred["prediction"][0]["month"])
 expect("pred61 首月值=3936", pred["prediction"][0]["value"] == 3936, str(pred["prediction"][0]["value"]))
 expect("pred61 置信区间", pred["prediction"][0]["lower"] == 3345 and pred["prediction"][0]["upper"] == 4526)
 
 # 不在爬虫预测名单的车型（车 3 不在 20 款名单内）→ 回退趋势外推 fallback，不得冒充真实模型
-pred2 = c.get(f"{BASE}/predict/sales", params={"carId": 3, "horizon": 6}, headers=H).json()
+pred2 = c.get(f"{BASE}/predict/sales", params={"carId": 3, "horizon": 6}, headers=H).json()["data"]
 expect("pred3 fallback 标识", pred2["model"] == "趋势外推（Fallback）", pred2["model"])
 expect("pred3 月份顺延 2026-07 起", pred2["prediction"][0]["month"] == "2026-07")
 
 # 3. 地区：31 个省级行政区（爬虫 31 短名补全）
-regions = c.get(f"{BASE}/dashboard/region", headers=H).json()["regions"]
+regions = c.get(f"{BASE}/dashboard/region", headers=H).json()["data"]["regions"]
 expect("region 数量=31", len(regions) == 31, str(len(regions)))
 names = {r["name"] for r in regions}
 expect("region 全名为省级", "北京市" in names and "广东省" in names and "内蒙古自治区" in names)
 
 # 4. 舆情：总评价数 = 1302
-overview = c.get(f"{BASE}/sentiment", headers=H).json()
+overview = c.get(f"{BASE}/sentiment", headers=H).json()["data"]
 expect("reviews 总数=1302", overview["total"] == 1302, str(overview["total"]))
 
 # 5. 订单：状态只允许前端枚举，completed 已映射 delivered
-orders = c.get(f"{BASE}/admin/orders", params={"pageSize": 100}, headers=H).json()
+orders = c.get(f"{BASE}/admin/orders", params={"pageSize": 100}, headers=H).json()["data"]
 statuses = {o["status"] for o in orders["list"]}
 expect("orders 状态合法", statuses <= {"pending", "paid", "delivered", "cancelled"}, str(statuses))
 expect("orders 总数=100", orders["total"] == 100, str(orders["total"]))
@@ -60,27 +60,27 @@ sample = orders["list"][0]
 expect("orders 金额为万元", sample["amount"] < 200, str(sample["amount"]))
 
 # 6. 品牌：30 个，含阵营映射
-brands = c.get(f"{BASE}/admin/brands", params={"pageSize": 50}, headers=H).json()
+brands = c.get(f"{BASE}/admin/brands", params={"pageSize": 50}, headers=H).json()["data"]
 groups = {b["group"] for b in brands["list"]}
 expect("brands 总数=30", brands["total"] == 30, str(brands["total"]))
 expect("brands 阵营映射", {"自主", "新势力", "日系", "德系", "美系", "韩系"} <= groups, str(groups))
 
 # 7. 用户：10 爬虫用户 + analyst/sales 演示账号
-users = c.get(f"{BASE}/admin/users", params={"pageSize": 50}, headers=H).json()
+users = c.get(f"{BASE}/admin/users", params={"pageSize": 50}, headers=H).json()["data"]
 expect("users 总数=12", users["total"] == 12, str(users["total"]))
 
 # 8. 能源结构：EREV 并入 PHEV 输出
-energy = c.get(f"{BASE}/dashboard/energy", headers=H).json()["proportion"]
+energy = c.get(f"{BASE}/dashboard/energy", headers=H).json()["data"]["proportion"]
 enames = {e["name"] for e in energy}
 expect("能源输出无增程", "增程" not in enames, str(enames))
 expect("能源 4 类", len(energy) == 4, str(len(energy)))
 
 # 9. 库存：100 条，仓库为真实城市
-inv = c.get(f"{BASE}/admin/inventory", params={"pageSize": 1}, headers=H).json()
+inv = c.get(f"{BASE}/admin/inventory", params={"pageSize": 1}, headers=H).json()["data"]
 expect("inventory 总数=100", inv["total"] == 100, str(inv["total"]))
 
 # 10. 车型月销明细与 CSV 一致（car 1 @ 2026-06 = 3138）
-sales_rows = c.get(f"{BASE}/sales", params={"span": 18, "pageSize": 100, "brandId": 1}, headers=H).json()
+sales_rows = c.get(f"{BASE}/sales", params={"span": 18, "pageSize": 100, "brandId": 1}, headers=H).json()["data"]
 row = next(r for r in sales_rows["list"] if r["carId"] == 1 and r["month"] == "2026-06")
 expect("sales 明细 car1@2026-06=3138", row["sales"] == 3138, str(row["sales"]))
 
@@ -90,7 +90,7 @@ rec_real = c.post(f"{BASE}/recommend", headers=H, json={
     "province": "广东省", "city": "广州市",
     "weights": {"price": 70, "range": 60, "performance": 50, "space": 60, "intelligence": 60, "comfort": 50},
     "topN": 5,
-}).json()
+}).json()["data"]
 expect("推荐命中真实数据", rec_real["model"] == "Crawl-Rec（真实推荐数据）", rec_real["model"])
 expect("真实推荐有排序", len(rec_real["recommendations"]) >= 1, str(len(rec_real["recommendations"])))
 
@@ -99,22 +99,22 @@ rec_fb = c.post(f"{BASE}/recommend", headers=H, json={
     "province": "广东省", "city": "东莞市",
     "weights": {"price": 60, "range": 60, "performance": 60, "space": 60, "intelligence": 60, "comfort": 60},
     "topN": 3,
-}).json()
+}).json()["data"]
 expect("未命中城市走 Fallback", rec_fb["model"] == "AutoRec（Fallback）", rec_fb["model"])
 
 # 12. admin 概览新增订单锚定数据月份（2026-06）且与订单明细一致
-overview = c.get(f"{BASE}/admin/overview", headers=H).json()
-orders_all = c.get(f"{BASE}/admin/orders", params={"pageSize": 200}, headers=H).json()["list"]
+overview = c.get(f"{BASE}/admin/overview", headers=H).json()["data"]
+orders_all = c.get(f"{BASE}/admin/orders", params={"pageSize": 200}, headers=H).json()["data"]["list"]
 june_orders = sum(1 for o in orders_all if o["createdAt"].startswith("2026-06"))
 expect("newOrders=2026-06 真实订单数", overview["newOrders"] == june_orders,
        f'{overview["newOrders"]} vs {june_orders}')
-users_all = c.get(f"{BASE}/admin/users", params={"pageSize": 200}, headers=H).json()["list"]
+users_all = c.get(f"{BASE}/admin/users", params={"pageSize": 200}, headers=H).json()["data"]["list"]
 june_users = sum(1 for u in users_all if (u.get("createdAt") or "").startswith("2026-06"))
 expect("newUsers=2026-06 真实新增用户", overview["newUsers"] == june_users,
        f'{overview["newUsers"]} vs {june_users}')
 
 # 13. 库存趋势：终点 = 真实当前库存总量
-inv_trend = c.get(f"{BASE}/admin/inventory-trend", headers=H).json()
+inv_trend = c.get(f"{BASE}/admin/inventory-trend", headers=H).json()["data"]
 expect("库存趋势月份=12 真实月", len(inv_trend["months"]) == 12)
 expect("库存趋势终点=真实总库存", inv_trend["data"][-1] > 0, str(inv_trend["data"][-1]))
 

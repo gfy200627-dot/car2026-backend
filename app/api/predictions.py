@@ -1,11 +1,12 @@
 """销量预测 API（对齐 src/api/predict.ts → GET /predict/sales）
 
 两级来源，内部严格区分、绝不混用：
-1. 真实模型预测：导入的爬虫模型结果（sales_predictions.model_name='Crawl-XGBoost'），
-   覆盖该车型未来 horizon 全部月份时直接返回，API model 标识「XGBoost（真实模型预测）」
-2. Fallback：无真实模型结果时，以近 6 月线性趋势 + 季节因子外推兜底，
-   API model 标识「趋势外推（Fallback）」，落库 model_name='TrendSeasonal-Fallback'，
-   不冒充 XGBoost 等实际模型。
+1. 导入的真实模型预测：来自爬虫数据（sales_predictions.model_name='Crawled-Model'，
+   由 import_real_data 导入的 sales_prediction.csv，源数据未标注算法名），
+   覆盖该车型未来 horizon 全部月份时直接返回，API model 标识「真实模型预测（导入数据）」
+2. Fallback：无真实模型结果时，以近 6 月线性趋势 + 季节因子外推兜底
+   （本仓库未训练/执行任何 ML 模型），API model 标识「趋势外推（Fallback）」，
+   落库 model_name='TrendSeasonal-Fallback'，不冒充任何机器学习模型。
 历史序列以 CarSales 实际月份为准。
 """
 
@@ -28,8 +29,8 @@ router = APIRouter()
 # 月度季节因子（1 月春节前置、2 月低点、年末冲量）——与前端 Mock 一致
 SEASONAL = [0.88, 0.64, 1.02, 1.0, 1.05, 1.09, 0.94, 0.98, 1.08, 1.06, 1.13, 1.24]
 
-# 真实爬取模型预测的落库标识（sales_prediction.csv，import_real_data 导入）
-CRAWL_MODEL = "Crawl-XGBoost"
+# 导入的真实模型预测落库标识（算法名源数据未标注，故不写具体模型名）
+CRAWLED_MODEL = "Crawled-Model"
 # fallback（趋势外推）的落库标识——与真实模型严格区分
 FALLBACK_MODEL = "TrendSeasonal-Fallback"
 
@@ -100,14 +101,14 @@ def predict_sales(
     future_months = [_add_month(all_months[-1], i) for i in range(1, horizon + 1)]
     rng = Rng(f"predict-{car.id if car else 'b' + str(brand.id)}-{horizon}")
 
-    # 真实爬取模型预测优先：库中已有该车型未来 horizon 个月的 Crawl-XGBoost 结果时直接返回
+    # 真实爬取模型预测优先：库中已有该车型未来 horizon 个月的 Crawled-Model 结果时直接返回
     crawled_by_month: dict[str, SalesPrediction] = {}
     if car is not None:
         crawled = (
             db.query(SalesPrediction)
             .filter(
                 SalesPrediction.car_id == car.id,
-                SalesPrediction.model_name == CRAWL_MODEL,
+                SalesPrediction.model_name == CRAWLED_MODEL,
                 SalesPrediction.prediction_month.in_([parse_month(m) for m in future_months]),
             )
             .all()
@@ -125,8 +126,8 @@ def predict_sales(
             for m in future_months
         ]
         accuracy = round(sum(crawled_by_month[m].accuracy for m in future_months) / horizon, 3)
-        model_name = CRAWL_MODEL
-        api_model = "XGBoost（真实模型预测）"
+        model_name = CRAWLED_MODEL
+        api_model = "真实模型预测（导入数据）"
     else:
         # 近 6 月线性趋势外推（与前端 Mock 同口径）
         recent = history_values[-6:]

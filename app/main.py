@@ -1,7 +1,8 @@
 """FastAPI 主入口：中间件、路由、异常处理"""
 
+import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -45,6 +46,38 @@ app.add_exception_handler(BizError, biz_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
+
+
+@app.middleware("http")
+async def envelope_middleware(request: Request, call_next):
+    """成功响应统一包裹 {code, message, data, timestamp}（与前端 Mock 契约一致）。
+
+    仅处理 /api 下 200 的 JSON 响应；已带 code 的响应（异常处理器产出）原样透传，
+    非成功状态码（401/403/404 等）保持原状态码，envelope 由异常处理器负责。
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        return response
+    if response.status_code != 200:
+        return response
+    if "application/json" not in response.headers.get("content-type", ""):
+        return response
+
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return Response(content=body, status_code=response.status_code, media_type="application/json")
+    if isinstance(payload, dict) and "code" in payload:
+        # 已是 envelope（异常处理器/健康检查等），避免双重包裹
+        return Response(content=body, status_code=response.status_code, media_type="application/json")
+
+    wrapped = json.dumps(envelope(data=payload), ensure_ascii=False).encode("utf-8")
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    return Response(content=wrapped, status_code=200, headers=headers, media_type="application/json")
 
 
 @app.get("/")

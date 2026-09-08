@@ -2,7 +2,7 @@
 
 聚合口径：
 - 时间窗口一律取自 CarSales 实际存在的月份（available_months），不构造不存在的月份
-- 地区维度统一使用 RegionalSales 真实数据，不再用 全国销量 × Region.weight 估算
+- 地区维度统一使用 RegionalSales 真实数据，不再按权重份额估算地区销量
   （RegionalSales 无能源/品牌/价格维度，相关筛选参数保留但仅作用于车型级指标）
 - 能源口径：EREV 并入 PHEV
 """

@@ -147,7 +147,7 @@ users ──1:N──> operation_logs        collection_logs（独立采集日�
 ### 算法说明
 
 - **销量预测** `GET /api/predict/sales`：优先返回爬虫导入的真实模型预测
-  （`sales_predictions` 表 `Crawl-XGBoost` 标识，覆盖 20 款车型 2026-07 ~ 2026-12）；
+  （`sales_predictions` 表 `Crawled-Model` 标识，覆盖 20 款车型 2026-07 ~ 2026-12）；
   无真实预测时以近 6 月线性趋势 + 季节因子 + 确定性扰动外推，置信区间随步长放大，
   结果幂等落库 `sales_predictions`
 - **购车推荐** `POST /api/recommend`：硬约束过滤（预算/能源）→ 价格/续航/场景/四项评分多维打分

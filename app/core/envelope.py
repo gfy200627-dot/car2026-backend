@@ -55,5 +55,11 @@ async def validation_exception_handler(_request: Request, exc: RequestValidation
 
 
 async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """兜底异常：HTTP 200 + code 500（避免前端拿到裸 500 HTML）"""
-    return JSONResponse(status_code=200, content=error_envelope(500, f"服务内部错误：{exc}"))
+    """兜底异常：HTTP 200 + code 500（避免前端拿到裸 500 HTML）
+
+    响应体不携带异常细节（防止泄露 SQL/内部路径/堆栈），完整堆栈仅输出到服务端日志。
+    """
+    import traceback
+
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    return JSONResponse(status_code=200, content=error_envelope(500, "服务内部错误，请稍后重试"))

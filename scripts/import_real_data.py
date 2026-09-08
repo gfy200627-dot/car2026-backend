@@ -95,7 +95,7 @@ BRAND_COLORS = [
 # 评价情感分（与评分联动，确定性取值）
 SENTIMENT_SCORE = {"positive": 0.85, "neutral": 0.5, "negative": 0.2}
 
-CRAWL_MODEL = "Crawl-XGBoost"
+CRAWLED_MODEL = "Crawled-Model"
 CRAWL_REC_MODEL = "Crawl-Rec"
 
 
@@ -443,7 +443,7 @@ def import_logs(db) -> int:
 
 
 def import_predictions(db) -> int:
-    if db.query(F.count(SalesPrediction.id)).filter(SalesPrediction.model_name == CRAWL_MODEL).scalar():
+    if db.query(F.count(SalesPrediction.id)).filter(SalesPrediction.model_name == CRAWLED_MODEL).scalar():
         return 0
     rows = []
     for r in load_csv("sales_prediction.csv"):
@@ -453,7 +453,7 @@ def import_predictions(db) -> int:
             predicted_sales=to_int(r["predicted_sales"]),
             lower=to_int(r["lower_bound"]),
             upper=to_int(r["upper_bound"]),
-            model_name=CRAWL_MODEL,
+            model_name=CRAWLED_MODEL,
             accuracy=to_float(r["confidence"], 0.9),
         ))
     db.bulk_save_objects(rows)

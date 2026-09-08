@@ -15,7 +15,7 @@ def check(name: str, resp: httpx.Response, keys=None, is_list=False):
         failures.append(f"{name}: HTTP {resp.status_code} {resp.text[:200]}")
         print(f"✗ {name}: HTTP {resp.status_code}")
         return None
-    data = resp.json()
+    data = resp.json()["data"]
     if is_list:
         if not isinstance(data, list) or not data:
             failures.append(f"{name}: 期望非空列表，实际 {type(data).__name__}")
@@ -39,7 +39,7 @@ c = httpx.Client(timeout=30)
 # 登录
 r = c.post(f"{BASE}/auth/login", json={"username": "admin", "password": "admin123"})
 assert r.status_code == 200, r.text
-token = r.json()["token"]
+token = r.json()["data"]["token"]
 H = {"Authorization": f"Bearer {token}"}
 print("✓ auth/login")
 
