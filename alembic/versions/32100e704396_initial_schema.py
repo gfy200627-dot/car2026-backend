@@ -32,8 +32,8 @@ def upgrade() -> None:
     sa.Column('calls', sa.Integer(), nullable=False, comment='调用次数'),
     sa.Column('owner', sa.String(length=64), nullable=False, comment='负责人'),
     sa.Column('config', sa.JSON(), nullable=False, comment='参数配置'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_algorithm_tasks_status'), 'algorithm_tasks', ['status'], unique=False)
@@ -52,8 +52,8 @@ def upgrade() -> None:
     sa.Column('annual_sales', sa.Integer(), nullable=False, comment='年销量（辆）'),
     sa.Column('status', sa.String(length=16), nullable=False, comment='active/inactive'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='数据来源'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name')
     )
@@ -69,8 +69,8 @@ def upgrade() -> None:
     sa.Column('quarantined_count', sa.Integer(), nullable=False, comment='隔离记录数'),
     sa.Column('status', sa.String(length=16), nullable=False, comment='success/partial/error'),
     sa.Column('error_message', sa.String(length=512), nullable=True, comment='错误摘要'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('source', 'collected_at', name='uq_collection_log')
     )
@@ -86,8 +86,8 @@ def upgrade() -> None:
     sa.Column('rows', sa.Integer(), nullable=False, comment='入库行数'),
     sa.Column('message', sa.String(length=512), nullable=True, comment='错误消息'),
     sa.Column('uploaded_at', sa.DateTime(), nullable=False, comment='上传时间'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('energy_sales',
@@ -95,8 +95,8 @@ def upgrade() -> None:
     sa.Column('energy_type', sa.String(length=8), nullable=False, comment='BEV/PHEV/EREV/HEV/ICE'),
     sa.Column('month', sa.Date(), nullable=False, comment='月份'),
     sa.Column('sales', sa.Integer(), nullable=False, comment='销量（辆）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('energy_type', 'month', name='uq_energy_sales_type_month')
     )
@@ -106,8 +106,8 @@ def upgrade() -> None:
     sa.Column('name', sa.String(length=32), nullable=False, comment='省份名称'),
     sa.Column('weight', sa.Float(), nullable=False, comment='市场份额权重'),
     sa.Column('penetration', sa.Float(), nullable=False, comment='新能源渗透率 %'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name')
     )
@@ -125,8 +125,8 @@ def upgrade() -> None:
     sa.Column('last_login_ip', sa.String(length=64), nullable=True, comment='最后登录 IP'),
     sa.Column('login_count', sa.Integer(), nullable=False, comment='登录次数'),
     sa.Column('car_count', sa.Integer(), nullable=False, comment='关注的车型数'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('username'),
     sa.UniqueConstraint('username', name='uq_user_username')
@@ -138,8 +138,8 @@ def upgrade() -> None:
     sa.Column('brand_id', sa.Integer(), nullable=False, comment='品牌 ID'),
     sa.Column('alias', sa.String(length=128), nullable=False, comment='别名'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='别名来源'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('alias', name='uq_brand_alias')
@@ -151,8 +151,8 @@ def upgrade() -> None:
     sa.Column('brand_id', sa.Integer(), nullable=False, comment='品牌 ID'),
     sa.Column('month', sa.Date(), nullable=False, comment='月份'),
     sa.Column('sales', sa.Integer(), nullable=False, comment='销量（辆）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('brand_id', 'month', name='uq_brand_sales_brand_month')
@@ -192,8 +192,8 @@ def upgrade() -> None:
     sa.Column('tags', sa.JSON(), nullable=False, comment='标签'),
     sa.Column('image', sa.String(length=255), nullable=True, comment='车型图片 URL'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='数据来源'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('brand_id', 'name_norm', 'energy_type', name='uq_car_brand_name_energy'),
@@ -214,8 +214,8 @@ def upgrade() -> None:
     sa.Column('ip', sa.String(length=64), nullable=True, comment='客户端 IP'),
     sa.Column('result', sa.String(length=16), nullable=False, comment='success/failure'),
     sa.Column('detail', sa.String(length=512), nullable=True, comment='详情'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -231,8 +231,8 @@ def upgrade() -> None:
     sa.Column('brand_id', sa.Integer(), nullable=True, comment='品牌 ID（NULL=全部）'),
     sa.Column('sales', sa.Integer(), nullable=False, comment='销量（辆）'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='来源（公开明细 unavailable 时为 estimated）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['region_id'], ['regions.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
@@ -246,8 +246,8 @@ def upgrade() -> None:
     sa.Column('sales', sa.Integer(), nullable=False, comment='销量（辆，>0）'),
     sa.Column('revenue', sa.Float(), nullable=False, comment='销售额（万元）'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='数据来源'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('car_id', 'month', name='uq_car_sales_car_month')
@@ -262,8 +262,8 @@ def upgrade() -> None:
     sa.Column('turnover_days', sa.Float(), nullable=False, comment='周转天数'),
     sa.Column('warehouse', sa.String(length=64), nullable=False, comment='仓库名称'),
     sa.Column('status', sa.String(length=16), nullable=False, comment='紧张/偏低/充足'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -272,8 +272,8 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('car_id', sa.Integer(), nullable=False, comment='车型 ID'),
     sa.Column('alias', sa.String(length=128), nullable=False, comment='别名'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('car_id', 'alias', name='uq_model_alias')
@@ -289,8 +289,8 @@ def upgrade() -> None:
     sa.Column('status', sa.String(length=16), nullable=False, comment='pending/paid/shipped/completed/cancelled'),
     sa.Column('region', sa.String(length=32), nullable=False, comment='地区'),
     sa.Column('salesperson', sa.String(length=64), nullable=True, comment='销售员'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('order_no'),
@@ -307,8 +307,8 @@ def upgrade() -> None:
     sa.Column('rank_no', sa.Integer(), nullable=False, comment='本次请求内排名'),
     sa.Column('reason', sa.String(length=500), nullable=True, comment='推荐理由'),
     sa.Column('model_name', sa.String(length=64), nullable=False, comment='算法标识'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -325,8 +325,8 @@ def upgrade() -> None:
     sa.Column('likes', sa.Integer(), nullable=False, comment='点赞数'),
     sa.Column('source', sa.String(length=64), nullable=False, comment='来源平台'),
     sa.Column('source_url', sa.String(length=512), nullable=True, comment='来源 URL'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
@@ -343,8 +343,8 @@ def upgrade() -> None:
     sa.Column('upper', sa.Integer(), nullable=False, comment='置信上界'),
     sa.Column('model_name', sa.String(length=64), nullable=False, comment='模型名'),
     sa.Column('accuracy', sa.Float(), nullable=False, comment='验证集准确率 0~1'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['car_id'], ['cars.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('car_id', 'prediction_month', 'model_name', name='uq_prediction_car_month_model')
@@ -357,8 +357,8 @@ def upgrade() -> None:
     sa.Column('score', sa.Float(), nullable=False, comment='情感分 0~1'),
     sa.Column('keywords', sa.JSON(), nullable=False, comment='命中关键词'),
     sa.Column('model_name', sa.String(length=64), nullable=False, comment='分析模型'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='创建时间'),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False, comment='更新时间'),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='创建时间'),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False, comment='更新时间'),
     sa.ForeignKeyConstraint(['review_id'], ['reviews.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('review_id', name='uq_sentiment_review')

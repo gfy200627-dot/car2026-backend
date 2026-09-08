@@ -46,6 +46,12 @@ def prev_month(month: str) -> str:
     return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
 
 
+def next_month(month: str) -> str:
+    """2026-12 → 2027-01（日历下一月，用于 [start, end) 区间过滤）"""
+    y, m = int(month[:4]), int(month[5:7])
+    return f"{y + 1}-01" if m == 12 else f"{y}-{m + 1:02d}"
+
+
 def calc_yoy(monthly: dict[str, float], window: list[str]) -> float:
     """同比：仅当上一年同月在 monthly 中真实存在时才计入比较，避免用缺失月当 0"""
     cur = prev = 0.0

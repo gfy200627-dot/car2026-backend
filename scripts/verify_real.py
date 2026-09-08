@@ -84,6 +84,40 @@ sales_rows = c.get(f"{BASE}/sales", params={"span": 18, "pageSize": 100, "brandI
 row = next(r for r in sales_rows["list"] if r["carId"] == 1 and r["month"] == "2026-06")
 expect("sales 明细 car1@2026-06=3138", row["sales"] == 3138, str(row["sales"]))
 
+# 11. 推荐：命中爬虫场景 → 返回真实推荐数据；未命中 → Fallback
+rec_real = c.post(f"{BASE}/recommend", headers=H, json={
+    "budget": "20-30", "energyTypes": ["BEV", "PHEV"], "scenarios": ["commute"],
+    "province": "广东省", "city": "广州市",
+    "weights": {"price": 70, "range": 60, "performance": 50, "space": 60, "intelligence": 60, "comfort": 50},
+    "topN": 5,
+}).json()
+expect("推荐命中真实数据", rec_real["model"] == "Crawl-Rec（真实推荐数据）", rec_real["model"])
+expect("真实推荐有排序", len(rec_real["recommendations"]) >= 1, str(len(rec_real["recommendations"])))
+
+rec_fb = c.post(f"{BASE}/recommend", headers=H, json={
+    "budget": "gt30", "energyTypes": ["BEV"], "scenarios": ["outdoor"],
+    "province": "广东省", "city": "东莞市",
+    "weights": {"price": 60, "range": 60, "performance": 60, "space": 60, "intelligence": 60, "comfort": 60},
+    "topN": 3,
+}).json()
+expect("未命中城市走 Fallback", rec_fb["model"] == "AutoRec（Fallback）", rec_fb["model"])
+
+# 12. admin 概览新增订单锚定数据月份（2026-06）且与订单明细一致
+overview = c.get(f"{BASE}/admin/overview", headers=H).json()
+orders_all = c.get(f"{BASE}/admin/orders", params={"pageSize": 200}, headers=H).json()["list"]
+june_orders = sum(1 for o in orders_all if o["createdAt"].startswith("2026-06"))
+expect("newOrders=2026-06 真实订单数", overview["newOrders"] == june_orders,
+       f'{overview["newOrders"]} vs {june_orders}')
+users_all = c.get(f"{BASE}/admin/users", params={"pageSize": 200}, headers=H).json()["list"]
+june_users = sum(1 for u in users_all if (u.get("createdAt") or "").startswith("2026-06"))
+expect("newUsers=2026-06 真实新增用户", overview["newUsers"] == june_users,
+       f'{overview["newUsers"]} vs {june_users}')
+
+# 13. 库存趋势：终点 = 真实当前库存总量
+inv_trend = c.get(f"{BASE}/admin/inventory-trend", headers=H).json()
+expect("库存趋势月份=12 真实月", len(inv_trend["months"]) == 12)
+expect("库存趋势终点=真实总库存", inv_trend["data"][-1] > 0, str(inv_trend["data"][-1]))
+
 print()
 if failures:
     print(f"❌ {len(failures)} 项抽查失败：", failures)

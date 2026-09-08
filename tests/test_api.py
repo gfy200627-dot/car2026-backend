@@ -519,7 +519,18 @@ from datetime import date  # noqa: E402
 
 from sqlalchemy import func as F  # noqa: E402
 
-from app.models import Brand, Car, CarSales, Region, RegionalSales, SalesPrediction  # noqa: E402
+from app.models import (
+    Brand,
+    Car,
+    CarSales,
+    Inventory,
+    Order,
+    Recommendation,
+    Region,
+    RegionalSales,
+    SalesPrediction,
+    User,
+)  # noqa: E402
 
 
 def _available_months() -> list[str]:
@@ -650,3 +661,101 @@ def test_alembic_upgrade_head_builds_schema(tmp_path):
     assert {"brands", "cars", "car_sales", "brand_sales", "energy_sales", "regional_sales",
             "users", "orders", "inventories", "reviews", "sentiments",
             "sales_predictions", "operation_logs"} <= tables
+
+
+def _month_range(month: str):
+    from app.utils.series import next_month, parse_month
+
+    return parse_month(month), parse_month(next_month(month))
+
+
+def test_admin_overview_counts_anchored_to_data_months(client, token):
+    """剩余问题①：新增用户/订单按数据月份统计并给出真实环比，不再恒为 0"""
+    months = _available_months()
+    last, prev = months[-1], (months[-2] if len(months) >= 2 else None)
+
+    def count_in(model_col, month):
+        if not month:
+            return 0
+        start, end = _month_range(month)
+        with _TestSession() as db:
+            return int(db.query(F.count(model_col)).filter(model_col >= start, model_col < end).scalar() or 0)
+
+    u_last, u_prev = count_in(User.created_at, last), count_in(User.created_at, prev)
+    o_last, o_prev = count_in(Order.created_at, last), count_in(Order.created_at, prev)
+
+    api = client.get("/api/admin/overview", headers=auth(token)).json()
+    assert api["newUsers"] == u_last
+    assert api["newOrders"] == o_last
+
+    def pct(cur, before):
+        return round((cur - before) / before * 100, 1) if before else 0
+
+    assert api["deltas"]["newUsers"] == pct(u_last, u_prev)
+    assert api["deltas"]["newOrders"] == pct(o_last, o_prev)
+
+
+def test_inventory_trend_follows_real_sales_curve(client, token):
+    """剩余问题②：库存趋势由真实库存快照 × 真实月度销量比例回推，不再是任意递增系数"""
+    months = _available_months()[-12:]
+    with _TestSession() as db:
+        total = int(db.query(F.sum(Inventory.quantity)).scalar() or 0)
+        sales = {
+            (m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7]): int(s or 0)
+            for m, s in db.query(CarSales.month, F.sum(CarSales.sales)).group_by(CarSales.month).all()
+        }
+    base = sales[months[-1]]
+    expected = [round(total * sales[m] / base) for m in months]
+
+    api = client.get("/api/admin/inventory-trend", headers=auth(token)).json()
+    assert api["months"] == months
+    assert api["data"] == expected
+
+
+def test_recommend_prefers_crawled_real_data(client, token):
+    """剩余问题③：命中爬虫推荐场景时返回真实排序（model=Crawl-Rec），
+    未命中的场景仍走 Fallback，且 fallback 不冒充真实推荐数据"""
+    import hashlib
+    import json as _json
+
+    scenario_hash = hashlib.md5(
+        _json.dumps(["深圳", "10-20万", "家用"], ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    with _TestSession() as db:
+        db.query(Recommendation).filter(
+            Recommendation.model_name == "Crawl-Rec", Recommendation.request_hash == scenario_hash
+        ).delete()
+        db.add(Recommendation(
+            request_hash=scenario_hash,
+            request_body={"city": "深圳", "budget": "10-20万", "purpose": "家用", "focus": "续航,智能化"},
+            car_id=66, score=91.0, rank_no=1, model_name="Crawl-Rec",
+        ))
+        db.add(Recommendation(
+            request_hash=scenario_hash,
+            request_body={"city": "深圳", "budget": "10-20万", "purpose": "家用", "focus": "续航,智能化"},
+            car_id=69, score=88.0, rank_no=2, model_name="Crawl-Rec",
+        ))
+        db.commit()
+
+    payload = {
+        "budget": "15-20", "energyTypes": ["BEV"], "scenarios": ["family"],
+        "province": "广东省", "city": "深圳市",
+        "weights": {"price": 10, "range": 90, "performance": 20, "space": 30, "intelligence": 80, "comfort": 20},
+        "topN": 3,
+    }
+    data = client.post("/api/recommend", json=payload, headers=auth(token)).json()
+    assert data["model"] == "Crawl-Rec（真实推荐数据）"
+    assert [r["carId"] for r in data["recommendations"]][:2] == [66, 69]
+    scores = [r["score"] for r in data["recommendations"]]
+    assert scores == sorted(scores, reverse=True)
+    assert {"carName", "brand", "score", "reason", "dimensions", "highlights"} <= set(data["recommendations"][0])
+
+    # 未命中场景（预算不映射到同一 crawl 档）→ Fallback 标识
+    other = client.post("/api/recommend", json={
+        "budget": "gt30", "energyTypes": ["BEV"], "scenarios": ["outdoor"],
+        "province": "广东省", "city": "深圳市",
+        "weights": {"price": 60, "range": 60, "performance": 60, "space": 60, "intelligence": 60, "comfort": 60},
+        "topN": 3,
+    }, headers=auth(token)).json()
+    assert other["model"] == "AutoRec（Fallback）"
+    assert other["model"] != data["model"]

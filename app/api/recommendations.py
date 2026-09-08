@@ -1,13 +1,16 @@
-"""智能购车推荐 API（对齐 src/api/recommend.ts + src/mock/recommend.ts 算法口径）
+"""智能购车推荐 API（对齐 src/api/recommend.ts）
 
-硬约束过滤（预算/能源）→ 多维度打分 → 按用户关注因素加权排序，
-结果快照写入 recommendations 表（request_hash 幂等）。
+两级来源，内部严格区分：
+1. 真实推荐数据：import_real_data 导入的爬虫推荐（recommendations.model_name='Crawl-Rec'），
+   按 城市+预算+用途 场景命中时直接返回真实排序（综合匹配度来自真实数据，
+   维度明细由真实车型参数计算），API model 标识「Crawl-Rec（真实推荐数据）」
+2. Fallback：无场景命中时，按 硬约束过滤→多维打分→加权排序 在线计算，
+   落库 model_name='AutoRec-Fallback'，API model 标识「AutoRec（Fallback）」。
 """
 
 import hashlib
 import json
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
@@ -20,6 +23,9 @@ from app.utils.rng import Rng, clamp, round as rng_round
 from app.utils.serialize import ENERGY_LABEL, energy_out
 
 router = APIRouter()
+
+CRAWL_REC_MODEL = "Crawl-Rec"
+FALLBACK_REC_MODEL = "AutoRec-Fallback"
 
 BUDGET_OPTIONS = [
     {"value": "lt10", "label": "10万以下", "min": 0.0, "max": 10.0},
@@ -68,6 +74,20 @@ CITY_MAP = {
     "陕西省": ["西安市", "咸阳市"],
     "重庆市": ["重庆市"],
     "天津市": ["天津市"],
+}
+
+# 前端枚举 → 爬虫推荐数据的口径
+_BUDGET_TO_CRAWL = {
+    "lt10": "5-10万", "10-15": "10-20万", "15-20": "10-20万",
+    "20-30": "20-30万", "gt30": "30万以上",
+}
+_PURPOSE_TO_CRAWL = {
+    "commute": "通勤", "family": "家用", "business": "商务",
+    "longtrip": "长途", "outdoor": "越野",
+}
+_WEIGHT_FACTOR_TO_CRAWL = {
+    "price": "价格", "range": "续航", "performance": "动力",
+    "space": "空间", "intelligence": "智能化", "comfort": "舒适性",
 }
 
 
@@ -123,6 +143,155 @@ def _scenario_score(car: Car, scenarios: list) -> float:
     return rng_round(total / len(scenarios), 1)
 
 
+def _recommendation_item(car: Car, score: float, budget: str, scenarios: list, weights: dict) -> dict:
+    """由真实车型参数构造推荐条目（维度明细/亮点/理由），综合匹配度 score 由调用方给出"""
+    p_score = _price_score(float(car.price), budget)
+    r_score = _range_score(energy_out(car.energy_type), car.range_km)
+    s_score = _scenario_score(car, scenarios)
+
+    dimensions = [
+        {"key": "price", "label": "价格匹配", "score": rng_round(p_score, 1)},
+        {"key": "range", "label": "续航匹配", "score": rng_round(r_score, 1)},
+        {"key": "energy", "label": "能源匹配", "score": 100},
+        {"key": "usage", "label": "用途匹配", "score": rng_round(s_score, 1)},
+        {"key": "intelligence", "label": "智能化", "score": car.intelligence_score},
+        {"key": "space", "label": "空间", "score": car.space_score},
+        {"key": "performance", "label": "性能", "score": car.performance_score},
+        {"key": "comfort", "label": "舒适性", "score": car.comfort_score},
+    ]
+
+    highlights = []
+    if p_score >= 82:
+        highlights.append("价格契合预算")
+    if r_score >= 80:
+        highlights.append("续航表现优秀")
+    if car.category == "SUV" and "family" in scenarios:
+        highlights.append("适配家庭出行")
+    if car.intelligence_score >= 85:
+        highlights.append("智能化配置领先")
+    if car.performance_score >= 82:
+        highlights.append("动力储备充足")
+    if car.space_score >= 85:
+        highlights.append("乘坐空间宽敞")
+    if float(car.price) <= 15 and energy_out(car.energy_type) == "BEV":
+        highlights.append("用车成本低")
+    if not highlights:
+        highlights.append("综合表现均衡")
+
+    top_factor = max(weights, key=lambda k: weights[k]) if weights else "price"
+    top_label = next((o["label"] for o in CONCERN_OPTIONS if o["value"] == top_factor), "综合")
+    brand_name = car.brand_rel.name if car.brand_rel else ""
+    car_name = f"{brand_name} {car.name}"
+    reason = _build_reason(car_name, top_label, dimensions, car.range_km, score, scenarios)
+
+    return {
+        "carId": car.id,
+        "carName": car_name,
+        "brand": brand_name,
+        "image": car.image,
+        "score": score,
+        "reason": reason,
+        "price": round(float(car.price), 2),
+        "energyType": energy_out(car.energy_type),
+        "range": car.range_km,
+        "rating": round(float(car.rating), 1),
+        "dimensions": dimensions,
+        "highlights": highlights[:3],
+    }
+
+
+def _build_reason(car_name: str, top_label: str, dimensions: list, range_km: int, score: float, scenarios: list) -> str:
+    def dim(key: str) -> float:
+        return next((d["score"] for d in dimensions if d["key"] == key), 0)
+
+    parts = [f"{car_name} 在您关注的「{top_label}」维度表现突出"]
+    if dim("price") >= 82:
+        parts.append("价格落在预算核心区间")
+    if dim("range") >= 78:
+        parts.append(f"续航 {range_km}km 满足日常与中长途出行")
+    if dim("usage") >= 80:
+        parts.append("与所选用车场景高度契合")
+    if dim("intelligence") >= 85:
+        parts.append("智能化配置处于同价位第一梯队")
+    scenario = "、".join(o["label"] for o in USAGE_OPTIONS if o["value"] in scenarios)
+    if scenario:
+        parts.append(f"适配{scenario}场景")
+    return f"{('，').join(parts)}。综合匹配度 {score}%。"
+
+
+def _crawl_recommendations(
+    db: Session, body: dict, budget: str, scenarios: list, weights: dict, top_n: int
+):
+    """命中爬虫推荐场景（城市+预算+用途）时返回真实排序结果，否则 None"""
+    city = str(body.get("city") or "").replace("市", "").strip()
+    crawl_budget = _BUDGET_TO_CRAWL.get(budget)
+    purpose = _PURPOSE_TO_CRAWL.get(scenarios[0] if scenarios else "")
+    if not city or not crawl_budget or not purpose:
+        return None
+
+    scenario_hash = hashlib.md5(
+        json.dumps([city, crawl_budget, purpose], ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    rows = (
+        db.query(Recommendation)
+        .filter(Recommendation.model_name == CRAWL_REC_MODEL, Recommendation.request_hash == scenario_hash)
+        .order_by(Recommendation.rank_no)
+        .all()
+    )
+    if not rows:
+        return None
+
+    # 多个关注因素组合时，选与用户 top2 权重重合度最高的组，条目不足再按真实排名补齐
+    top_factors = {
+        _WEIGHT_FACTOR_TO_CRAWL[k]
+        for k, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:2]
+        if k in _WEIGHT_FACTOR_TO_CRAWL
+    }
+    groups: dict[str, list] = {}
+    for r in rows:
+        focus = (r.request_body or {}).get("focus") or ""
+        groups.setdefault(focus, []).append(r)
+
+    def overlap(focus: str) -> int:
+        return len(top_factors & {f for f in focus.split(",") if f})
+
+    picked: list[Recommendation] = []
+    seen: set[int] = set()
+    for focus, group in sorted(groups.items(), key=lambda kv: (-overlap(kv[0]), kv[0])):
+        for r in sorted(group, key=lambda x: x.rank_no):
+            if r.car_id in seen:
+                continue
+            picked.append(r)
+            seen.add(r.car_id)
+            if len(picked) >= top_n:
+                break
+        if len(picked) >= top_n:
+            break
+    if not picked:
+        return None
+
+    cars = {
+        c.id: c
+        for c in db.query(Car).options(joinedload(Car.brand_rel)).filter(Car.id.in_([r.car_id for r in picked]))
+    }
+    items = []
+    for row in sorted(picked, key=lambda r: r.rank_no)[:top_n]:
+        car = cars.get(row.car_id)
+        if car is None:
+            continue
+        items.append(_recommendation_item(car, round(float(row.score), 1), budget, scenarios, weights))
+    if not items:
+        return None
+
+    return {
+        "requestId": f"RC{scenario_hash[:8].upper()}",
+        "model": "Crawl-Rec（真实推荐数据）",
+        "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "isMock": False,
+        "recommendations": items,
+    }
+
+
 @router.get("/recommend/options", summary="推荐筛选选项")
 def recommend_options(current: UserSchema = Depends(get_current_user)) -> dict:
     return {
@@ -147,6 +316,21 @@ def recommend(
     top_n = int(body.get("topN") or 6)
     weights = body.get("weights") or {}
 
+    w = {
+        "price": float(weights.get("price", 60)),
+        "range": float(weights.get("range", 60)),
+        "performance": float(weights.get("performance", 60)),
+        "space": float(weights.get("space", 60)),
+        "intelligence": float(weights.get("intelligence", 60)),
+        "comfort": float(weights.get("comfort", 60)),
+    }
+
+    # 1) 真实爬虫推荐数据优先
+    crawl = _crawl_recommendations(db, body, budget, scenarios, w, top_n)
+    if crawl is not None:
+        return crawl
+
+    # 2) Fallback：在线多维加权打分
     request_json = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
     request_hash = hashlib.md5(request_json.encode("utf-8")).hexdigest()
     request_id = f"RC{int(hashlib.sha1(request_json.encode('utf-8')).hexdigest(), 16) % 100000000:08d}"
@@ -160,16 +344,7 @@ def recommend(
     ).all()
     candidates = [c for c in cars if energy_out(c.energy_type) in energy_set]
 
-    w = {
-        "price": float(weights.get("price", 60)),
-        "range": float(weights.get("range", 60)),
-        "performance": float(weights.get("performance", 60)),
-        "space": float(weights.get("space", 60)),
-        "intelligence": float(weights.get("intelligence", 60)),
-        "comfort": float(weights.get("comfort", 60)),
-    }
     w_total = sum(w.values()) or 1
-
     scored = []
     for car in candidates:
         p_score = _price_score(float(car.price), budget)
@@ -186,103 +361,28 @@ def recommend(
         }
         weighted = sum(factor_scores[k] * w[k] for k in w) / w_total
         score = clamp(weighted * 0.82 + (float(car.rating) / 5) * 100 * 0.1 + s_score * 0.08 + rng.float(-1.6, 1.6), 40, 99)
+        scored.append((car, rng_round(score, 1)))
 
-        highlights = []
-        if p_score >= 82:
-            highlights.append("价格契合预算")
-        if r_score >= 80:
-            highlights.append("续航表现优秀")
-        if car.category == "SUV" and "family" in scenarios:
-            highlights.append("适配家庭出行")
-        if car.intelligence_score >= 85:
-            highlights.append("智能化配置领先")
-        if car.performance_score >= 82:
-            highlights.append("动力储备充足")
-        if car.space_score >= 85:
-            highlights.append("乘坐空间宽敞")
-        if float(car.price) <= 15 and energy_out(car.energy_type) == "BEV":
-            highlights.append("用车成本低")
-        if not highlights:
-            highlights.append("综合表现均衡")
-
-        dimensions = [
-            {"key": "price", "label": "价格匹配", "score": rng_round(p_score, 1)},
-            {"key": "range", "label": "续航匹配", "score": rng_round(r_score, 1)},
-            {"key": "energy", "label": "能源匹配", "score": 100},
-            {"key": "usage", "label": "用途匹配", "score": rng_round(s_score, 1)},
-            {"key": "intelligence", "label": "智能化", "score": car.intelligence_score},
-            {"key": "space", "label": "空间", "score": car.space_score},
-            {"key": "performance", "label": "性能", "score": car.performance_score},
-            {"key": "comfort", "label": "舒适性", "score": car.comfort_score},
-        ]
-
-        top_factor = max(w, key=lambda k: w[k])
-        top_label = next((o["label"] for o in CONCERN_OPTIONS if o["value"] == top_factor), "综合")
-        brand_name = car.brand_rel.name if car.brand_rel else ""
-        car_name = f"{brand_name} {car.name}"
-        final_score = rng_round(score, 1)
-        reason = _build_reason(car_name, top_label, dimensions, car.range_km, final_score, scenarios)
-
-        scored.append({
-            "car": car,
-            "item": {
-                "carId": car.id,
-                "carName": car_name,
-                "brand": brand_name,
-                "image": car.image,
-                "score": final_score,
-                "reason": reason,
-                "price": round(float(car.price), 2),
-                "energyType": energy_out(car.energy_type),
-                "range": car.range_km,
-                "rating": round(float(car.rating), 1),
-                "dimensions": dimensions,
-                "highlights": highlights[:3],
-            },
-        })
-
-    scored.sort(key=lambda t: t["item"]["score"], reverse=True)
+    scored.sort(key=lambda t: t[1], reverse=True)
     top = scored[:top_n]
 
-    # 推荐快照入库（幂等：同 request_hash 覆盖）
+    # Fallback 快照入库（幂等：同 request_hash 覆盖）
     db.query(Recommendation).filter(Recommendation.request_hash == request_hash).delete()
-    for rank, entry in enumerate(top, start=1):
+    for rank, (car, score) in enumerate(top, start=1):
         db.add(Recommendation(
             request_hash=request_hash,
             request_body=body,
-            car_id=entry["car"].id,
-            score=entry["item"]["score"],
+            car_id=car.id,
+            score=score,
             rank_no=rank,
-            reason=entry["item"]["reason"],
-            model_name="AutoRec-CarRanking v2.3",
+            model_name=FALLBACK_REC_MODEL,
         ))
     db.commit()
 
     return {
         "requestId": request_id,
-        "model": "AutoRec-CarRanking v2.3",
+        "model": "AutoRec（Fallback）",
         "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "isMock": False,
-        "recommendations": [entry["item"] for entry in top],
+        "recommendations": [_recommendation_item(car, score, budget, scenarios, w) for car, score in top],
     }
-
-
-def _build_reason(car_name: str, top_label: str, dimensions: list, range_km: int, score: float, scenarios: list) -> str:
-    def dim(key: str) -> float:
-        return next((d["score"] for d in dimensions if d["key"] == key), 0)
-
-    parts = [f"{car_name} 在您关注的「{top_label}」维度表现突出"]
-    if dim("price") >= 82:
-        parts.append("价格落在预算核心区间")
-    if dim("range") >= 78:
-        parts.append(f"续航 {range_km}km 满足日常与中长途出行")
-    if dim("usage") >= 80:
-        parts.append("与所选用车场景高度契合")
-    if dim("intelligence") >= 85:
-        parts.append("智能化配置处于同价位第一梯队")
-    scenario = "、".join(
-        o["label"] for o in USAGE_OPTIONS if o["value"] in scenarios
-    )
-    if scenario:
-        parts.append(f"适配{scenario}场景")
-    return f"{('，').join(parts)}。综合匹配度 {score}%。"

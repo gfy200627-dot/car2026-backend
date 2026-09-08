@@ -1,6 +1,6 @@
 """企业管理后台 API（对齐 src/api/admin.ts + src/mock/handlers.ts 行为）"""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.schemas.user import UserSchema
 from app.utils.serialize import UPDATED_AT, available_months, car_to_dict, paginate, sort_by
-from app.utils.series import parse_month
+from app.utils.series import next_month, parse_month
 
 router = APIRouter()
 
@@ -61,9 +61,17 @@ def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(
     inventory_total = db.query(F.sum(Inventory.quantity)).scalar() or 0
     prev_inventory = inventory_total  # 无历史快照，环比按 0 处理
 
-    now = datetime.now()
-    new_users = db.query(F.count(User.id)).filter(User.created_at >= now - timedelta(days=30)).scalar() or 0
-    new_orders = db.query(F.count(Order.id)).filter(Order.created_at >= now - timedelta(days=30)).scalar() or 0
+    # 新增用户/订单按数据月份统计（真实 created_at），环比对上一个数据月份
+    def _count_in_month(col, month: Optional[str]) -> int:
+        if not month:
+            return 0
+        start, end = parse_month(month), parse_month(next_month(month))
+        return int(db.query(F.count(col)).filter(col >= start, col < end).scalar() or 0)
+
+    new_users = _count_in_month(User.created_at, last_month)
+    prev_users = _count_in_month(User.created_at, prev_month)
+    new_orders = _count_in_month(Order.created_at, last_month)
+    prev_orders = _count_in_month(Order.created_at, prev_month)
 
     calls = dict(
         db.query(AlgorithmTask.type, F.sum(AlgorithmTask.calls)).group_by(AlgorithmTask.type).all()
@@ -80,16 +88,16 @@ def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(
         "todaySales": round(month_sales / 30),
         "monthSales": month_sales,
         "inventory": int(inventory_total),
-        "newUsers": int(new_users),
-        "newOrders": int(new_orders),
+        "newUsers": new_users,
+        "newOrders": new_orders,
         "recommendCount": recommend_count,
         "predictTasks": predict_tasks,
         "deltas": {
             "todaySales": pct(month_sales, prev_sales),
             "monthSales": pct(month_sales, prev_sales),
             "inventory": pct(inventory_total, prev_inventory),
-            "newUsers": 0,
-            "newOrders": 0,
+            "newUsers": pct(new_users, prev_users),
+            "newOrders": pct(new_orders, prev_orders),
             "recommendCount": 0,
             "predictTasks": 0,
         },
@@ -165,8 +173,19 @@ def admin_car_ranking(
 @router.get("/admin/inventory-trend", summary="库存趋势")
 def admin_inventory_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
     months = available_months(db)[-12:]
-    total = db.query(F.sum(Inventory.quantity)).scalar() or 0
-    data = [round(total * (0.86 + i * 0.014)) for i in range(len(months))]
+    if not months:
+        return {"months": [], "data": []}
+    total = int(db.query(F.sum(Inventory.quantity)).scalar() or 0)
+    sales = {
+        (m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7]): int(s or 0)
+        for m, s in db.query(CarSales.month, F.sum(CarSales.sales)).group_by(CarSales.month).all()
+    }
+    base = sales.get(months[-1], 0)
+    if base:
+        # 真实库存仅一个期末快照：以真实月度销量比例回推各月末库存估计值
+        data = [round(total * sales.get(m, 0) / base) for m in months]
+    else:
+        data = [total] * len(months)
     return {"months": months, "data": data}
 
 

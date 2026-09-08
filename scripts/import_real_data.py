@@ -20,6 +20,8 @@
 """
 
 import argparse
+import hashlib
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -94,6 +96,7 @@ BRAND_COLORS = [
 SENTIMENT_SCORE = {"positive": 0.85, "neutral": 0.5, "negative": 0.2}
 
 CRAWL_MODEL = "Crawl-XGBoost"
+CRAWL_REC_MODEL = "Crawl-Rec"
 
 
 def load_csv(name: str) -> list[dict]:
@@ -458,6 +461,32 @@ def import_predictions(db) -> int:
     return len(rows)
 
 
+def import_recommendations(db) -> int:
+    """爬虫推荐知识库：场景（城市+预算+用途）→ 真实车型排序，供 /recommend 命中返回"""
+    if db.query(F.count(Recommendation.id)).filter(Recommendation.model_name == CRAWL_REC_MODEL).scalar():
+        return 0
+    car_ids = {c.id for c in db.query(Car.id).all()}
+    rows = []
+    for r in load_csv("recommendation_data.csv"):
+        cid = int(r["car_id"])
+        if cid not in car_ids:
+            continue
+        scenario_hash = hashlib.md5(
+            json.dumps([r["city"], r["budget"], r["purpose"]], ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        rows.append(Recommendation(
+            request_hash=scenario_hash,
+            request_body={"city": r["city"], "budget": r["budget"], "purpose": r["purpose"], "focus": r["focus"]},
+            car_id=cid,
+            score=round(to_float(r["match_score"]) * 10, 1),  # 0~10 → 0~100
+            rank_no=max(to_int(r["rank"], 1), 1),
+            model_name=CRAWL_REC_MODEL,
+        ))
+    db.bulk_save_objects(rows)
+    db.commit()
+    return len(rows)
+
+
 def backfill(db) -> None:
     """回填聚合快照：车型销量/排名、品牌车型数/年销/权重"""
     cars = db.query(Car).all()
@@ -543,6 +572,7 @@ def main():
         print(f"库存导入: {import_inventory(db)} 条")
         print(f"操作日志: {import_logs(db)} 条")
         print(f"预测导入: {import_predictions(db)} 行（20 款车型 × 6 个月）")
+        print(f"推荐导入: {import_recommendations(db)} 行（真实推荐知识库）")
 
         backfill(db)
         print("聚合回填: 车型销量/排名、品牌年销/车型数 完成")
