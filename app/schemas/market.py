@@ -1,50 +1,62 @@
-"""市场分析相关 Schema（对齐 src/types/api.ts）"""
+"""市场与销量 Schema（对齐 src/types/api.ts MultiSeries / ProportionItem / RankingItem 等）"""
+
+from typing import List, Optional
 
 from pydantic import BaseModel
-from typing import List, Optional
+
+
+class SeriesItem(BaseModel):
+    name: str
+    data: List[float]
+    type: Optional[str] = None  # line/bar
+    unit: Optional[str] = None
+
+
+class MultiSeries(BaseModel):
+    months: List[str]
+    series: List[SeriesItem]
+
+
+class RankingItem(BaseModel):
+    name: str
+    value: float
+    share: Optional[float] = None  # 0~1
+    yoy: Optional[float] = None
+    extra: Optional[str] = None
+
+
+class ProportionItem(BaseModel):
+    name: str
+    value: float
+    ratio: Optional[float] = None  # 0~1
+
+
+class RegionSalesItem(BaseModel):
+    name: str
+    value: int
+    yoy: Optional[float] = None
+    penetration: Optional[float] = None
+
+
+class SalesRecord(BaseModel):
+    """销量明细行（前端 SalesRecord 契约）"""
+
+    id: int
+    carId: int
+    carName: str
+    brand: str
+    month: str
+    sales: int
+    revenue: float
+    region: str
+    energyType: str
 
 
 class MarketOptions(BaseModel):
+    years: List[str]
+    months: List[int]
     brands: List[dict]
     energies: List[dict]
-    categories: List[dict]
-    years: List[int]
-    priceBuckets: List[dict]
-    regions: List[dict]
-    months: List[str]
+    categories: List[str]
+    regions: List[str]
     updatedAt: str
-
-
-class MarketTrendResponse(BaseModel):
-    points: List[dict]
-    yoy: float
-
-
-class MarketShare(BaseModel):
-    list: List[dict]
-    total: int
-
-
-class MarketPenetration(BaseModel):
-    list: List[dict]
-    total: int
-
-
-class MarketPrice(BaseModel):
-    list: List[dict]
-    total: int
-
-
-class MarketBrandRank(BaseModel):
-    list: List[dict]
-    total: int
-
-
-class MarketCategory(BaseModel):
-    list: List[dict]
-    total: int
-
-
-class MarketCategoryTrend(BaseModel):
-    points: List[dict]
-    yoy: float

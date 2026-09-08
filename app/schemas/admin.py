@@ -1,214 +1,112 @@
-"""管理后台相关 Schema（对齐 src/types/api.ts）"""
+"""管理后台 Schema（对齐 src/types/business.ts Admin* 系列）"""
 
-from pydantic import BaseModel
 from typing import List, Optional
 
+from pydantic import BaseModel
 
-class UserList(BaseModel):
+
+class AdminOverview(BaseModel):
+    todaySales: int
+    monthSales: int
+    inventory: int
+    newUsers: int
+    newOrders: int
+    recommendCount: int
+    predictTasks: int
+    deltas: dict
+    updatedAt: str
+    isMock: bool = False
+
+
+class AdminUserItem(BaseModel):
     id: int
     username: str
     nickname: str
     email: str
-    role: str
-    status: str
-    createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            username=obj.username,
-            nickname=obj.nickname,
-            email=obj.email,
-            role=obj.role,
-            status=obj.status,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
-
-
-class UserDetail(UserList):
-    phone: str
-    department: str
-    lastLoginAt: str
-    lastLoginIp: str
-    loginCount: int
-    carCount: int
-
-
-class UserCreate(BaseModel):
-    username: str
-    nickname: str
-    email: str
-    phone: str
-    password_hash: str
-    role: str
-    status: str
-    department: str
-
-
-class UserUpdate(BaseModel):
-    nickname: Optional[str] = None
-    email: Optional[str] = None
     phone: Optional[str] = None
-    role: Optional[str] = None
-    status: Optional[str] = None
+    role: str
+    status: str
     department: Optional[str] = None
+    createdAt: str
+    lastLoginAt: Optional[str] = None
+    lastLoginIp: Optional[str] = None
+    loginCount: Optional[int] = None
+    carCount: Optional[int] = None
 
 
-class InventoryList(BaseModel):
+class BrandItem(BaseModel):
+    id: int
+    name: str
+    nameEn: str
+    country: str
+    group: str
+    color: str
+    foundedYear: int
+    energyFocus: List[str] = []
+    modelCount: Optional[int] = None
+    annualSales: Optional[int] = None
+    status: Optional[str] = None
+
+
+class InventoryItem(BaseModel):
     id: int
     carId: int
+    carName: str
+    brand: str
     quantity: int
     inbound: int
     monthlySales: int
     turnoverDays: float
     warehouse: str
-    status: str
-    createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            carId=obj.car_id,
-            quantity=obj.quantity,
-            inbound=obj.inbound,
-            monthlySales=obj.monthly_sales,
-            turnoverDays=obj.turnover_days,
-            warehouse=obj.warehouse,
-            status=obj.status,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+    status: str  # 充足/偏低/紧张
 
 
-class InventoryCreate(BaseModel):
-    carId: int
-    quantity: int
-    inbound: int
-    warehouse: str
-
-
-class OrderList(BaseModel):
+class OrderItem(BaseModel):
     id: int
     orderNo: str
     carId: int
+    carName: str
+    brand: str
     customer: str
     amount: float
-    status: str
+    status: str  # pending/paid/delivered/cancelled
     region: str
-    salesperson: str
     createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            orderNo=obj.order_no,
-            carId=obj.car_id,
-            customer=obj.customer,
-            amount=obj.amount,
-            status=obj.status,
-            region=obj.region,
-            salesperson=obj.salesperson,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+    salesperson: str
 
 
-class OrderCreate(BaseModel):
-    carId: int
-    customer: str
-    amount: float
-    region: str
-    salesperson: Optional[str] = None
-
-
-class AlgorithmTaskList(BaseModel):
+class AlgorithmTaskItem(BaseModel):
     id: int
     name: str
-    type: str
+    type: str  # 推荐/预测/舆情
     model: str
     version: str
     accuracy: float
-    status: str
+    status: str  # running/idle/failed/training
     lastRunAt: str
     calls: int
     owner: str
 
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            name=obj.name,
-            type=obj.type,
-            model=obj.model,
-            version=obj.version,
-            accuracy=obj.accuracy,
-            status=obj.status,
-            lastRunAt=obj.last_run_at.strftime("%Y-%m-%d %H:%M:%S") if obj.last_run_at else None,
-            calls=obj.calls,
-            owner=obj.owner,
-        )
 
-
-class AlgorithmTaskCreate(BaseModel):
-    name: str
-    type: str
-    model: str
-    version: str = "1.0"
-    accuracy: float = 0.0
-    status: str = "idle"
-    owner: str = "system"
-
-
-class OperationLogList(BaseModel):
+class OperationLogItem(BaseModel):
     id: int
-    userId: int
+    operator: str
     action: str
     module: str
-    target: str
+    target: Optional[str] = None
     ip: str
-    result: str
+    result: str  # success/failed
     createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            userId=obj.user_id,
-            action=obj.action,
-            module=obj.module,
-            target=obj.target,
-            ip=obj.ip,
-            result=obj.result,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+    detail: Optional[str] = None
 
 
-class DataFileList(BaseModel):
+class DataFileItem(BaseModel):
     id: int
     name: str
     size: int
-    type: str
-    status: str
+    type: str  # 车型数据/销量数据/评价数据
+    status: str  # success/uploading/failed/pending
     progress: int
-    rows: int
     uploadedAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            name=obj.name,
-            size=obj.size,
-            type=obj.type,
-            status=obj.status,
-            progress=obj.progress,
-            rows=obj.rows,
-            uploadedAt=obj.uploaded_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
-
-
-class DataFileCreate(BaseModel):
-    name: str
-    type: str
-    file: bytes  # 实际使用时需要处理文件上传
+    rows: Optional[int] = None
+    message: Optional[str] = None

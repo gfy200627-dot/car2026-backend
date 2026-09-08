@@ -1,44 +1,29 @@
-"""预测相关 Schema（对齐 src/types/api.ts）"""
+"""预测相关 Schema（对齐 src/types/business.ts PredictResult）"""
 
-from pydantic import BaseModel
 from typing import List, Optional
 
+from pydantic import BaseModel
 
-class PredictionList(BaseModel):
-    id: int
-    carId: int
-    brandId: int
-    type: str
-    period: str
+
+class PredictPoint(BaseModel):
+    month: str
+    value: int
+    lower: Optional[int] = None
+    upper: Optional[int] = None
+
+
+class PredictResult(BaseModel):
+    carId: Optional[int] = None
+    carName: str
+    brand: Optional[str] = None
     model: str
-    accuracy: float
-    status: str
-    createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            carId=obj.car_id,
-            brandId=obj.brand_id,
-            type=obj.type,
-            period=obj.period,
-            model=obj.model,
-            accuracy=obj.accuracy,
-            status=obj.status,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
-
-
-class PredictionDetail(PredictionList):
-    points: List[dict]
-    summary: dict
-
-
-class PredictionRequest(BaseModel):
-    carId: int
-    brandId: int
-    type: str
-    period: str
-    model: str
-    accuracy: float
+    accuracy: float  # 0~1
+    horizon: int  # 3/6/12
+    history: List[dict]  # [{month, value}]
+    prediction: List[PredictPoint]
+    updatedAt: str
+    growthRate: Optional[float] = None
+    peakMonth: Optional[str] = None
+    lowMonth: Optional[str] = None
+    isMock: bool = False
+    features: Optional[List[dict]] = None  # [{name, importance}]

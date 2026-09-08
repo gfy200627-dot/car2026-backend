@@ -1,47 +1,44 @@
-"""推荐相关 Schema（对齐 src/types/api.ts）"""
+"""智能推荐 Schema（对齐 src/types/business.ts RecommendResult / Recommendation）"""
 
-from pydantic import BaseModel
 from typing import List, Optional
 
+from pydantic import BaseModel
 
-class RecommendationList(BaseModel):
-    id: int
+
+class ScoreDimension(BaseModel):
+    key: str
+    label: str
+    score: float  # 0~100
+    desc: Optional[str] = None
+
+
+class RecommendationItem(BaseModel):
     carId: int
-    brandId: int
-    type: str
-    model: str
-    status: str
-    createdAt: str
-
-    @classmethod
-    def from_orm(cls, obj):
-        return cls(
-            id=obj.id,
-            carId=obj.car_id,
-            brandId=obj.brand_id,
-            type=obj.type,
-            model=obj.model,
-            status=obj.status,
-            createdAt=obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        )
-
-
-class RecommendationDetail(BaseModel):
-    id: int
-    carId: int
-    brandId: int
-    type: str
-    model: str
-    status: str
-    cars: List[int]
-    summary: dict
-
-
-class RecommendationRequest(BaseModel):
-    carId: int
-    brandId: int
-    type: str
-    model: str
-    category: str
-    energyType: str
+    carName: str
+    brand: str
+    image: Optional[str] = None
+    score: float  # 综合匹配度 0~100
+    reason: str
     price: float
+    energyType: str
+    range: int
+    rating: float
+    dimensions: List[ScoreDimension]
+    highlights: List[str]
+
+
+class RecommendResult(BaseModel):
+    requestId: str
+    model: str
+    generatedAt: str
+    isMock: bool = False
+    recommendations: List[RecommendationItem]
+
+
+class RecommendOptions(BaseModel):
+    budgets: List[dict]
+    usages: List[dict]
+    concerns: List[dict]
+    provinces: List[str]
+    cities: dict
+    energies: List[dict]

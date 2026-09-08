@@ -1,6 +1,6 @@
-"""认证与用户 API（对齐 src/api/auth.ts / users.ts）"""
+"""认证与用户 API（对齐 src/api/auth.ts / users.ts + UserProfile 契约）"""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,19 +10,37 @@ from app.core.security import (
     create_access_token,
     get_current_user,
     hash_password,
-    require_roles,
     verify_password,
 )
 from app.database.session import get_db
-from app.models.user import User
+from app.models import User as UserModel
 from app.schemas.user import LoginRequest, LoginResult, UserProfile
 
 router = APIRouter()
 
 
+def _profile(u: UserModel) -> UserProfile:
+    """ORM 用户 → 前端 UserProfile 契约"""
+    return UserProfile(
+        id=u.id,
+        username=u.username,
+        nickname=u.nickname,
+        email=u.email or "",
+        phone=u.phone or "",
+        role=u.role,
+        status=u.status,
+        department=u.department or "",
+        createdAt=u.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        lastLoginAt=u.last_login_at.strftime("%Y-%m-%d %H:%M:%S") if u.last_login_at else None,
+        lastLoginIp=u.last_login_ip,
+        loginCount=u.login_count or 0,
+        carCount=u.car_count or 0,
+    )
+
+
 @router.post("/auth/login", summary="登录", response_model=LoginResult)
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> LoginResult:
-    user = db.query(User).filter_by(username=body.username).first()
+    user = db.query(UserModel).filter_by(username=body.username).first()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码错误")
     if user.status != "active":
@@ -38,33 +56,25 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> LoginResult:
         token=token,
         refreshToken=token,  # 简化版暂用同一 token
         expiresIn=60 * 60 * 12,  # 12h
-        user=UserProfile(
-            id=user.id,
-            username=user.username,
-            nickname=user.nickname,
-            email=user.email,
-            role=user.role,
-            status=user.status,
-            createdAt=user.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        ),
+        user=_profile(user),
     )
 
 
 @router.post("/auth/register", summary="注册")
 def register(body: dict, db: Session = Depends(get_db)) -> UserProfile:
-    username = body.get("username", "").strip()
-    password = body.get("password", "")
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
     if not username or len(username) < 3:
         raise HTTPException(status_code=400, detail="用户名至少 3 个字符")
-    if db.query(User).filter_by(username=username).first():
+    if db.query(UserModel).filter_by(username=username).first():
         raise HTTPException(status_code=409, detail="用户名已存在")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="密码至少 6 个字符")
 
-    u = User(
+    u = UserModel(
         username=username,
-        nickname=body.get("nickname", username),
-        email=body.get("email", ""),
+        nickname=body.get("nickname") or username,
+        email=body.get("email") or "",
         password_hash=hash_password(password),
         role="user",
         status="active",
@@ -72,15 +82,7 @@ def register(body: dict, db: Session = Depends(get_db)) -> UserProfile:
     db.add(u)
     db.commit()
     db.refresh(u)
-    return UserProfile(
-        id=u.id,
-        username=u.username,
-        nickname=u.nickname,
-        email=u.email,
-        role=u.role,
-        status=u.status,
-        createdAt=u.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-    )
+    return _profile(u)
 
 
 @router.post("/auth/logout", summary="退出登录")
@@ -89,31 +91,19 @@ def logout() -> dict:
 
 
 @router.get("/users/me", summary="获取当前用户", response_model=UserProfile)
-def get_me(current: User = Depends(get_current_user)) -> UserProfile:
-    return UserProfile(
-        id=current.id,
-        username=current.username,
-        nickname=current.nickname,
-        email=current.email,
-        role=current.role,
-        status=current.status,
-        createdAt=current.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-    )
+def get_me(current: UserModel = Depends(get_current_user)) -> UserProfile:
+    return _profile(current)
 
 
 @router.put("/users/me", summary="更新当前用户资料")
-def update_me(body: dict, current: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserProfile:
-    for k in ("nickname", "email", "phone"):
-        if k in body:
+def update_me(
+    body: dict,
+    current: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserProfile:
+    for k in ("nickname", "email", "phone", "department"):
+        if k in body and body[k] is not None:
             setattr(current, k, body[k])
     db.commit()
     db.refresh(current)
-    return UserProfile(
-        id=current.id,
-        username=current.username,
-        nickname=current.nickname,
-        email=current.email,
-        role=current.role,
-        status=current.status,
-        createdAt=current.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-    )
+    return _profile(current)

@@ -1,4 +1,4 @@
-"""用户相关 Schema（对齐 src/types/api.ts）"""
+"""用户相关 Schema（对齐 src/types/business.ts UserProfile / AdminUserItem）"""
 
 from pydantic import BaseModel
 
@@ -13,9 +13,17 @@ class UserProfile(BaseModel):
     username: str
     nickname: str
     email: str
+    phone: str = ""
     role: str  # admin/analyst/sales/user
-    status: str
+    status: str  # active/disabled/pending
+    avatar: str | None = None
+    department: str = ""
     createdAt: str
+    lastLoginAt: str | None = None
+    lastLoginIp: str | None = None
+    loginCount: int = 0
+    # AdminUserItem 扩展字段
+    carCount: int = 0
 
     class Config:
         alias_generator = to_camel
@@ -34,3 +42,7 @@ class LoginResult(BaseModel):
     refreshToken: str
     expiresIn: int
     user: UserProfile
+
+
+# API 层依赖注入注解使用 UserSchema；与 SQLAlchemy 的 User 模型区分
+UserSchema = UserProfile
