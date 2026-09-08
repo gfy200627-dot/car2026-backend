@@ -31,8 +31,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：只允许明确配置的可信 Origin，避免重复或非法的
-# Access-Control-Allow-Origin 响应头。
+# CORS：只允许明确配置的可信 Origin。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -46,6 +45,36 @@ app.add_exception_handler(BizError, biz_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
+
+
+@app.middleware("http")
+async def cors_preflight_middleware(request: Request, call_next):
+    """兜底处理生产环境 CORS 预检请求。
+
+    Render/代理层若让 OPTIONS 请求绕过 Starlette 的正常路由流程，浏览器会把
+    后续 POST 直接拦截。对于可信前端 Origin，直接返回 204 并补齐预检响应头。
+    正常请求仍交给 CORSMiddleware 和 FastAPI 处理。
+    """
+    if request.method == "OPTIONS":
+        origin = request.headers.get("origin", "")
+        if origin in settings.cors_origins:
+            requested_headers = request.headers.get(
+                "access-control-request-headers",
+                "Authorization, Content-Type, Accept, Origin, X-Requested-With",
+            )
+            requested_method = request.headers.get("access-control-request-method", "POST")
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": requested_method,
+                    "Access-Control-Allow-Headers": requested_headers,
+                    "Access-Control-Max-Age": "600",
+                    "Vary": "Origin",
+                },
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
