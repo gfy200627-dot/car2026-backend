@@ -1,6 +1,7 @@
 """数据库连接与会话"""
 
 import os
+import ssl
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -20,16 +21,17 @@ def _database_connect_args(database_url: str):
         parts = urlsplit(database_url)
         query = dict(parse_qsl(parts.query, keep_blank_values=True))
         ca_path = query.get("ssl_ca") or os.getenv("MYSQL_SSL_CA")
+        verify_identity = query.get("ssl_verify_identity", "true").lower() == "true"
+        verify_cert = query.get("ssl_verify_cert", "true").lower() == "true"
 
         if ca_path:
             ca_file = Path(ca_path).expanduser()
             if ca_file.exists():
                 connect_args["ssl"] = {
                     "ca": str(ca_file),
-                    "check_hostname": query.get("ssl_verify_identity", "true").lower() == "true",
+                    "check_hostname": verify_identity,
+                    "cert_reqs": ssl.CERT_REQUIRED if verify_cert and verify_identity else ssl.CERT_NONE,
                 }
-                # PyMySQL consumes SSL settings from connect_args. Remove these
-                # SSL-only URL parameters before handing the URL to SQLAlchemy.
                 query.pop("ssl_ca", None)
                 query.pop("ssl_verify_cert", None)
                 query.pop("ssl_verify_identity", None)
