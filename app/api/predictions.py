@@ -23,6 +23,9 @@ router = APIRouter()
 # 月度季节因子（1 月春节前置、2 月低点、年末冲量）——与前端 Mock 一致
 SEASONAL = [0.88, 0.64, 1.02, 1.0, 1.05, 1.09, 0.94, 0.98, 1.08, 1.06, 1.13, 1.24]
 
+# 真实爬取模型预测的落库标识（sales_prediction.csv，import_real_data 导入）
+CRAWL_MODEL = "Crawl-XGBoost"
+
 
 def _add_month(month: str, delta: int) -> str:
     y, m = int(month[:4]), int(month[5:7])
@@ -87,32 +90,93 @@ def predict_sales(
     history_values = series[-12:]
     history = [{"month": m, "value": v} for m, v in zip(history_months, history_values)]
 
-    # 近 6 月线性趋势外推（与前端 Mock 同口径）
-    recent = history_values[-6:]
-    first_half = sum(recent[:3]) / 3
-    second_half = sum(recent[3:]) / 3
-    trend_rate = clamp((second_half - first_half) / (first_half or 1), -0.28, 0.36)
-
-    base = second_half
+    future_months = [_add_month(all_months[-1], i) for i in range(1, horizon + 1)]
     rng = Rng(f"predict-{car.id if car else 'b' + str(brand.id)}-{horizon}")
-    last_month = all_months[-1]
 
-    prediction = []
-    for i in range(1, horizon + 1):
-        month = _add_month(last_month, i)
-        nm = int(month[5:7])
-        seasonal = SEASONAL[nm - 1]
-        trend = 1 + (trend_rate * i) / horizon
-        noise = rng.float(0.94, 1.06)
-        value = max(60, round(base * seasonal * trend * noise))
+    # 真实爬取模型预测优先：库中已有该车型未来 horizon 个月的 Crawl-XGBoost 结果时直接返回
+    crawled_by_month: dict[str, SalesPrediction] = {}
+    if car is not None:
+        crawled = (
+            db.query(SalesPrediction)
+            .filter(
+                SalesPrediction.car_id == car.id,
+                SalesPrediction.model_name == CRAWL_MODEL,
+                SalesPrediction.prediction_month.in_([parse_month(m) for m in future_months]),
+            )
+            .all()
+        )
+        crawled_by_month = {p.prediction_month.strftime("%Y-%m"): p for p in crawled}
 
-        band = clamp(0.045 + i * 0.012, 0.05, 0.22)
-        prediction.append({
-            "month": month,
-            "value": value,
-            "lower": max(30, round(value * (1 - band))),
-            "upper": round(value * (1 + band)),
-        })
+    if len(crawled_by_month) == horizon:
+        prediction = [
+            {
+                "month": m,
+                "value": crawled_by_month[m].predicted_sales,
+                "lower": crawled_by_month[m].lower,
+                "upper": crawled_by_month[m].upper,
+            }
+            for m in future_months
+        ]
+        accuracy = round(sum(crawled_by_month[m].accuracy for m in future_months) / horizon, 3)
+        model_name = "XGBoost（爬虫实测预测）"
+    else:
+        # 近 6 月线性趋势外推（与前端 Mock 同口径）
+        recent = history_values[-6:]
+        first_half = sum(recent[:3]) / 3
+        second_half = sum(recent[3:]) / 3
+        trend_rate = clamp((second_half - first_half) / (first_half or 1), -0.28, 0.36)
+
+        base = second_half
+        last_month = all_months[-1]
+
+        prediction = []
+        for i in range(1, horizon + 1):
+            month = _add_month(last_month, i)
+            nm = int(month[5:7])
+            seasonal = SEASONAL[nm - 1]
+            trend = 1 + (trend_rate * i) / horizon
+            noise = rng.float(0.94, 1.06)
+            value = max(60, round(base * seasonal * trend * noise))
+
+            band = clamp(0.045 + i * 0.012, 0.05, 0.22)
+            prediction.append({
+                "month": month,
+                "value": value,
+                "lower": max(30, round(value * (1 - band))),
+                "upper": round(value * (1 + band)),
+            })
+
+        accuracy = rng_round(clamp(0.9 - horizon * 0.004 + rng.float(-0.02, 0.035), 0.78, 0.96), 3)
+        model_name = "XGBoost + 季节因子融合" if horizon >= 12 else "XGBoost"
+
+        # 落库（幂等：同 car+month+model 覆盖）
+        if car is not None:
+            for p in prediction:
+                row = (
+                    db.query(SalesPrediction)
+                    .filter(
+                        SalesPrediction.car_id == car.id,
+                        SalesPrediction.prediction_month == parse_month(p["month"]),
+                        SalesPrediction.model_name == model_name,
+                    )
+                    .first()
+                )
+                if row:
+                    row.predicted_sales = p["value"]
+                    row.lower = p["lower"]
+                    row.upper = p["upper"]
+                    row.accuracy = accuracy
+                else:
+                    db.add(SalesPrediction(
+                        car_id=car.id,
+                        prediction_month=parse_month(p["month"]),
+                        predicted_sales=p["value"],
+                        lower=p["lower"],
+                        upper=p["upper"],
+                        model_name=model_name,
+                        accuracy=accuracy,
+                    ))
+            db.commit()
 
     pred_values = [p["value"] for p in prediction]
     hist_avg = sum(history_values[-3:]) / 3
@@ -120,38 +184,6 @@ def predict_sales(
     growth_rate = rng_round((pred_avg - hist_avg) / hist_avg * 100, 1) if hist_avg else 0
     peak = max(prediction, key=lambda p: p["value"])
     low = min(prediction, key=lambda p: p["value"])
-    accuracy = rng_round(clamp(0.9 - horizon * 0.004 + rng.float(-0.02, 0.035), 0.78, 0.96), 3)
-
-    model_name = "XGBoost + 季节因子融合" if horizon >= 12 else "XGBoost"
-
-    # 落库（幂等：同 car+month+model 覆盖）
-    if car is not None:
-        for p in prediction:
-            row = (
-                db.query(SalesPrediction)
-                .filter(
-                    SalesPrediction.car_id == car.id,
-                    SalesPrediction.prediction_month == parse_month(p["month"]),
-                    SalesPrediction.model_name == model_name,
-                )
-                .first()
-            )
-            if row:
-                row.predicted_sales = p["value"]
-                row.lower = p["lower"]
-                row.upper = p["upper"]
-                row.accuracy = accuracy
-            else:
-                db.add(SalesPrediction(
-                    car_id=car.id,
-                    prediction_month=parse_month(p["month"]),
-                    predicted_sales=p["value"],
-                    lower=p["lower"],
-                    upper=p["upper"],
-                    model_name=model_name,
-                    accuracy=accuracy,
-                ))
-        db.commit()
 
     return {
         "carId": car.id if car else None,

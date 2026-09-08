@@ -24,9 +24,9 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     API_PREFIX: str = "/api"
 
-    # 数据时间轴（最近一个完整月，与前端 Mock 口径一致）
+    # 数据时间轴（最近一个完整月；真实爬取数据覆盖 2025-01 ~ 2026-06）
     LATEST_YEAR: int = 2026
-    LATEST_MONTH: int = 8
+    LATEST_MONTH: int = 6
 
     @property
     def cors_origins(self) -> List[str]:

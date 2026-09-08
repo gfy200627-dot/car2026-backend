@@ -107,7 +107,7 @@ def match_rows(rows, keyword: Optional[str]):
 
 @router.get("/market/options", summary="市场分析筛选选项")
 def market_options(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(24)
+    months = build_months(18)
     return {
         "years": sorted({m[:4] for m in months}),
         "months": list(range(1, 13)),

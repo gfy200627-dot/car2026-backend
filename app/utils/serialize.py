@@ -47,7 +47,7 @@ def month_window(
     month: Optional[int] = None,
 ) -> list[str]:
     """与 Mock monthWindow 一致：指定 year(+month) 时取该期，否则取最近 span 个月"""
-    months = build_months(24)
+    months = build_months(18)
     if year and month:
         target = f"{year}-{int(month):02d}"
         if target in months:

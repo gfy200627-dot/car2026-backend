@@ -59,15 +59,28 @@ cp .env.example .env
 DATABASE_URL=sqlite:///./car2026.db
 ```
 
-### 3. 初始化数据库与种子数据
+### 3. 初始化数据库与数据导入
+
+**方式 A：导入真实爬取数据（推荐，数据覆盖 2025-01 ~ 2026-06）**
+
+```bash
+python scripts/import_real_data.py --fresh
+```
+
+自动建表并导入 `data/real/*.csv`（爬虫采集）：30 品牌 / 150 车型（含图片、参数、评分）/
+车型与品牌月度销量 / 能源与地区（31 省）月度市场 / 1302 条真实评价（含情感标注）/
+10 用户 / 100 订单 / 100 库存 / 200 操作日志 / 20 款车型的真实模型预测（2026-07 ~ 2026-12）。
+`/predict/sales` 对这 20 款车型优先返回爬虫预测结果，其余车型回退在线算法。
+重复执行自动跳过；`--fresh` 清空业务数据后重导。
+
+**方式 B：生成演示数据（无爬虫数据时，pytest 也使用该方式）**
 
 ```bash
 python scripts/seed_demo.py
 ```
 
-脚本自动建表并导入与前端 Mock 同口径的演示数据：30 品牌 / 34 地区 / 158 车型 / 24 个月销量
-（含品牌、能源、地区聚合）/ 46 用户 / 库存 60 / 订单 160 / 算法任务 6 / 日志 120 / 评价 240（含情感标注）/ 预测快照 948。
-重复执行自动跳过已导入部分；`--fresh` 清空业务数据后重新生成。
+脚本自动建表并生成与前端 Mock 同口径的演示数据：30 品牌 / 158 车型 / 24 个月销量
+（含品牌、能源、地区聚合）/ 46 用户 / 库存 60 / 订单 160 / 算法任务 6 / 日志 120 / 评价 240。
 
 MySQL 生产环境可改用 Alembic 管理结构：
 
@@ -99,10 +112,12 @@ Vite 代理已配置 `^/api` → `http://127.0.0.1:8000`。
 
 | 用户名 | 密码 | 角色 | 说明 |
 |---|---|---|---|
-| admin | admin123 | admin | 系统管理员（全部权限） |
+| admin | admin123 | admin | 系统管理员（爬虫数据内置，全部权限） |
 | analyst | analyst123 | analyst | 数据分析师（分析与预测） |
 | sales | sales123 | sales | 销售运营（车型/订单/库存） |
-| user | user123 | user | 普通用户（浏览与推荐） |
+| user01 ~ user05 / test01 ~ 03 / reviewer | 用户名+123 | user | 爬虫数据内置真实用户 |
+
+> 爬虫源数据中密码为 MD5，无法用 bcrypt 校验，导入时统一重置为「用户名+123」。
 
 ## 核心设计
 
@@ -131,11 +146,14 @@ users ──1:N──> operation_logs        collection_logs（独立采集日�
 
 ### 算法说明
 
-- **销量预测** `GET /api/predict/sales`：近 6 月线性趋势 + 季节因子 + 确定性扰动外推，
-  置信区间随步长放大；每次调用结果幂等落库 `sales_predictions`
+- **销量预测** `GET /api/predict/sales`：优先返回爬虫导入的真实模型预测
+  （`sales_predictions` 表 `Crawl-XGBoost` 标识，覆盖 20 款车型 2026-07 ~ 2026-12）；
+  无真实预测时以近 6 月线性趋势 + 季节因子 + 确定性扰动外推，置信区间随步长放大，
+  结果幂等落库 `sales_predictions`
 - **购车推荐** `POST /api/recommend`：硬约束过滤（预算/能源）→ 价格/续航/场景/四项评分多维打分
   → 按用户关注因素加权排序，快照写入 `recommendations`（request_hash 幂等）
-- **舆情情感**：`reviews` 表逐条带 `sentiments` 标注（label/score/keywords），聚合产出概览/趋势/关键词/品牌口碑
+- **舆情情感**：`reviews` 表逐条带 `sentiments` 标注（真实爬取数据自带 label/keywords），
+  聚合产出概览/趋势/关键词/品牌口碑
 
 ## 测试
 
@@ -143,11 +161,12 @@ users ──1:N──> operation_logs        collection_logs（独立采集日�
 # 契约测试（sqlite 内存库自动种子，无需外部服务）
 pytest tests/ -v
 
-# 端到端冒烟（先启动服务并完成种子导入）
+# 端到端冒烟（先启动服务并完成数据导入）
 set DATABASE_URL=sqlite:///./car2026.db
-python scripts/seed_demo.py
+python scripts/import_real_data.py --fresh   # 或 python scripts/seed_demo.py
 python -m uvicorn app.main:app --port 8000
-python scripts/smoke_test.py
+python scripts/smoke_test.py       # 56 项接口结构检查
+python scripts/verify_real.py      # 真实数据抽查（需导入真实数据，服务跑在 8001 端口）
 ```
 
 契约测试覆盖全部 9 个 API 模块的响应结构，字段断言对齐前端 `src/types/*`。

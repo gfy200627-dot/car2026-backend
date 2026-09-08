@@ -102,7 +102,7 @@ def sentiment_overview(db: Session = Depends(get_db), current: UserSchema = Depe
 
 @router.get("/sentiment/trend", summary="情感趋势")
 def sentiment_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(24)[-12:]
+    months = build_months(18)
     rows = db.query(Review.published_at, Sentiment.label, F.count(Review.id)).join(
         Sentiment, Sentiment.review_id == Review.id
     ).group_by(Review.published_at, Sentiment.label).all()

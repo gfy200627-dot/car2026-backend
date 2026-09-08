@@ -106,7 +106,7 @@ def cars_options(db: Session = Depends(get_db), current: UserSchema = Depends(ge
         "years": sorted(years, reverse=True),
         "priceBuckets": [{"label": b["label"], "min": b["min"], "max": b["max"]} for b in PRICE_BUCKETS],
         "regions": [r.name for r in db.query(Region).order_by(Region.id).all()],
-        "months": build_months(24),
+        "months": build_months(18),
     }
 
 
