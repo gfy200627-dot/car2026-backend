@@ -22,6 +22,7 @@
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -92,7 +93,6 @@ BRAND_COLORS = [
     "#3b5bdb", "#e31937", "#00274c", "#003876", "#1c5faa", "#2f6fb0", "#0166b1", "#bb0a30",
     "#b12a2a", "#111827", "#047857", "#b45309", "#1d4ed8", "#9333ea",
 ]
-# 评价情感分（与评分联动，确定性取值）
 SENTIMENT_SCORE = {"positive": 0.85, "neutral": 0.5, "negative": 0.2}
 
 CRAWLED_MODEL = "Crawled-Model"
@@ -141,6 +141,13 @@ def match_region(name: str, region_names: list[str]) -> str | None:
         return name
     hits = [n for n in region_names if n.startswith(name)]
     return hits[0] if len(hits) == 1 else None
+
+
+def migrate_schema() -> None:
+    """导入前先应用 Alembic，确保线上已有数据库同步到当前 ORM schema。"""
+    root = Path(__file__).resolve().parents[1]
+    print("数据库结构迁移: alembic upgrade head")
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=root, check=True)
 
 
 def import_brands(db) -> int:
@@ -300,24 +307,9 @@ def import_users(db) -> int:
             username=username,
             nickname=r["nickname"] or username,
             email=f"{username}@autoinsight.com",
-            password_hash=hash_password(f"{username}123"),  # 源数据为 MD5，统一重置
+            password_hash=hash_password(f"{username}123"),
             role=r["role"] if r["role"] in ("admin", "analyst", "sales", "user") else "user",
-            status="active" if r["status"] == "1" else "disabled",
-            created_at=parse_dt(r["created_at"]) if r["created_at"] else None,
-            last_login_at=parse_dt(r["last_login_at"]) if r["last_login_at"] else None,
-        ))
-        count += 1
-    db.commit()
-
-    # 补齐前端角色演示账号（爬虫数据只有 admin/user 两种角色）
-    demo = [("analyst", "孙以宁", "analyst"), ("sales", "周砚清", "sales")]
-    for username, nickname, role in demo:
-        if db.query(User).filter_by(username=username).first():
-            continue
-        db.add(User(
-            username=username, nickname=nickname, email=f"{username}@autoinsight.com",
-            password_hash=hash_password(f"{username}123"), role=role, status="active",
-            department="演示账号",
+            status="active",
         ))
         count += 1
     db.commit()
@@ -327,28 +319,23 @@ def import_users(db) -> int:
 def import_reviews(db) -> int:
     if db.query(F.count(Review.id)).filter(Review.source == "crawl").scalar():
         return 0
-    cars = {c.id: c for c in db.query(Car).all()}
-    users = {u.id: u.nickname for u in db.query(User).all()}
+    cars = {c.id for c in db.query(Car.id).all()}
     reviews = []
     for r in load_csv("user_review.csv"):
-        car = cars.get(int(r["car_id"]))
-        if car is None:
+        cid = int(r["car_id"])
+        if cid not in cars:
             continue
-        rating = max(1, min(5, to_int(r["score"], 3)))
         reviews.append(Review(
-            car_id=car.id,
-            brand_id=car.brand_id,
-            user_name=users.get(int(r["user_id"]), "匿名用户"),
-            rating=rating,
+            car_id=cid,
+            user_id=int(r["user_id"]) if r["user_id"] else None,
             content=r["content"],
-            published_at=parse_dt(r["created_at"]).date(),
-            likes=0,
+            rating=to_float(r["rating"], 4.0),
             source="crawl",
+            created_at=parse_dt(r["created_at"]) if r["created_at"] else datetime.now(),
         ))
     db.bulk_save_objects(reviews)
     db.commit()
 
-    # 情感标注以爬虫结果为准（label/keywords），情感分由 label 确定性映射
     src_by_content = {r["content"]: r for r in load_csv("user_review.csv")}
     for review in db.query(Review).filter(Review.source == "crawl").all():
         src = src_by_content.get(review.content)
@@ -364,7 +351,6 @@ def import_reviews(db) -> int:
         ))
     db.commit()
 
-    # 回填车型评价数
     counts = dict(db.query(Review.car_id, F.count(Review.id)).group_by(Review.car_id).all())
     for cid, cnt in counts.items():
         car = db.get(Car, cid)
@@ -478,7 +464,7 @@ def import_recommendations(db) -> int:
             request_hash=scenario_hash,
             request_body={"city": r["city"], "budget": r["budget"], "purpose": r["purpose"], "focus": r["focus"]},
             car_id=cid,
-            score=round(to_float(r["match_score"]) * 10, 1),  # 0~10 → 0~100
+            score=round(to_float(r["match_score"]) * 10, 1),
             rank_no=max(to_int(r["rank"], 1), 1),
             model_name=CRAWL_REC_MODEL,
         ))
@@ -494,6 +480,8 @@ def backfill(db) -> None:
     for car_id, m, s in db.query(CarSales.car_id, CarSales.month, CarSales.sales).all():
         series.setdefault(car_id, {})[m.strftime("%Y-%m")] = int(s or 0)
     months = sorted({m for vals in series.values() for m in vals})
+    if not months:
+        return
     last12 = months[-12:]
     last_month = months[-1]
 
@@ -535,6 +523,7 @@ def main():
     parser.add_argument("--fresh", action="store_true", help="清空业务数据后重新导入")
     args = parser.parse_args()
 
+    migrate_schema()
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         if args.fresh:
@@ -544,13 +533,11 @@ def main():
             print("真实数据导入需要干净的业务表，请加 --fresh 重新导入。")
             return
 
-        # 地区维表沿用种子数据（34 省级行政区 + 权重/渗透率）
         if not db.query(F.count(Region.id)).scalar():
             from scripts.seed_demo import import_regions
             import_regions(db)
             print(f"地区维表: {db.query(F.count(Region.id)).scalar()} 条")
 
-        # 算法任务/数据文件登记为系统演示数据，空表时补齐
         if not db.query(F.count(AlgorithmTask.id)).scalar():
             from scripts.seed_demo import import_algorithms
             import_algorithms(db)
@@ -590,7 +577,7 @@ def main():
             status="success",
         ))
         db.commit()
-    print("✅ 真实数据接入完成（admin/admin123 登录）")
+    print("✅ 真实数据接入完成")
 
 
 if __name__ == "__main__":
