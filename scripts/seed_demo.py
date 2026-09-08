@@ -848,7 +848,7 @@ def import_predictions(db: Session) -> int:
                 predicted_sales=value,
                 lower=max(30, round(value * (1 - band))),
                 upper=round(value * (1 + band)),
-                model_name="XGBoost",
+                model_name="TrendSeasonal-Fallback",
                 accuracy=accuracy,
             ))
     db.bulk_save_objects(rows)

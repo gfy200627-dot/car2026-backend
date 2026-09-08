@@ -19,8 +19,7 @@ from app.database.session import get_db
 from app.models import Brand, Car, Review, Sentiment
 from app.schemas.user import UserSchema
 from app.utils.rng import Rng, clamp, round as rng_round
-from app.utils.serialize import UPDATED_AT
-from app.utils.series import build_months
+from app.utils.serialize import UPDATED_AT, available_months
 
 router = APIRouter()
 
@@ -102,7 +101,7 @@ def sentiment_overview(db: Session = Depends(get_db), current: UserSchema = Depe
 
 @router.get("/sentiment/trend", summary="情感趋势")
 def sentiment_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(18)
+    months = available_months(db)
     rows = db.query(Review.published_at, Sentiment.label, F.count(Review.id)).join(
         Sentiment, Sentiment.review_id == Review.id
     ).group_by(Review.published_at, Sentiment.label).all()

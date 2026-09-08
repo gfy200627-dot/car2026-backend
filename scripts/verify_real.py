@@ -29,16 +29,16 @@ expect("car1 有真实图片", bool(car1["image"]))
 expect("car1 sales12m=36196", car1["sales"] == 36196, str(car1["sales"]))
 expect("car1 lastMonth=3138", car1["lastMonthSales"] == 3138, str(car1["lastMonthSales"]))
 
-# 2. 预测：carId=61 在爬虫预测的 20 款车型里 → 应直接返回爬虫结果
+# 2. 预测：carId=61 在爬虫预测的 20 款车型里 → 应直接返回爬虫模型结果
 pred = c.get(f"{BASE}/predict/sales", params={"carId": 61, "horizon": 6}, headers=H).json()
-expect("pred61 用爬虫模型", "爬虫" in pred["model"], pred["model"])
+expect("pred61 用真实模型预测", pred["model"] == "XGBoost（真实模型预测）", pred["model"])
 expect("pred61 首月=2026-07", pred["prediction"][0]["month"] == "2026-07", pred["prediction"][0]["month"])
 expect("pred61 首月值=3936", pred["prediction"][0]["value"] == 3936, str(pred["prediction"][0]["value"]))
 expect("pred61 置信区间", pred["prediction"][0]["lower"] == 3345 and pred["prediction"][0]["upper"] == 4526)
 
-# 不在爬虫预测名单的车型（车 3 不在 20 款名单内）→ 回退在线算法
+# 不在爬虫预测名单的车型（车 3 不在 20 款名单内）→ 回退趋势外推 fallback，不得冒充真实模型
 pred2 = c.get(f"{BASE}/predict/sales", params={"carId": 3, "horizon": 6}, headers=H).json()
-expect("pred3 回退在线算法", "爬虫" not in pred2["model"], pred2["model"])
+expect("pred3 fallback 标识", pred2["model"] == "趋势外推（Fallback）", pred2["model"])
 expect("pred3 月份顺延 2026-07 起", pred2["prediction"][0]["month"] == "2026-07")
 
 # 3. 地区：31 个省级行政区（爬虫 31 短名补全）

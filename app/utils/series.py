@@ -33,3 +33,25 @@ def to_month_str(d: date) -> str:
 def parse_month(s: str) -> date:
     """YYYY-MM → Date(当月 1 日)"""
     return date(int(s[:4]), int(s[5:7]), 1)
+
+
+def prev_year_month(month: str) -> str:
+    """2026-06 → 2025-06（上一年同月）"""
+    return f"{int(month[:4]) - 1}-{month[5:7]}"
+
+
+def prev_month(month: str) -> str:
+    """2026-01 → 2025-12（日历上一月）"""
+    y, m = int(month[:4]), int(month[5:7])
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+def calc_yoy(monthly: dict[str, float], window: list[str]) -> float:
+    """同比：仅当上一年同月在 monthly 中真实存在时才计入比较，避免用缺失月当 0"""
+    cur = prev = 0.0
+    for m in window:
+        pm = prev_year_month(m)
+        if pm in monthly:
+            cur += monthly.get(m, 0) or 0
+            prev += monthly[pm] or 0
+    return round((cur - prev) / prev * 100, 1) if prev else 0.0

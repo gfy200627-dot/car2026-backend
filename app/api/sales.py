@@ -1,9 +1,9 @@
 """销量数据 API（对齐 src/api/market.ts 的 salesApi）
 
-- GET /sales          明细分页（车型 × 月份）
-- GET /sales/trend    趋势（复用市场分析口径）
-- GET /sales/ranking  品牌排行
-- GET /sales/region   地区销量
+- GET /sales          明细分页（车型 × 月份）；brandId 经 Car.brand_id 筛选
+- GET /sales/trend    趋势（与市场分析同口径；region 参数使用 RegionalSales 真实月度）
+- GET /sales/ranking  品牌排行（CarSales 聚合）
+- GET /sales/region   地区销量（RegionalSales 真实数据）
 - GET /sales/energy   能源结构（预留）
 """
 
@@ -14,11 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.database.session import get_db
-from app.models import Brand, CarSales
+from app.models import Brand, Car, CarSales
 from app.schemas.user import UserSchema
-from app.api.market import _brand_rank, _region_items, fetch_sales_rows, match_rows, monthly_series, region_factor
+from app.api.market import _brand_rank, _region_items, _regional_monthly, fetch_sales_rows, match_rows, monthly_series
 from app.utils.serialize import energy_out, month_window
-from app.utils.series import build_months
 
 router = APIRouter()
 
@@ -32,20 +31,18 @@ def list_sales(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)[-min(max(span, 1), 24):]
+    months = month_window(db, span)
     month_set = set(months)
 
-    from app.models import Car
-
-    rows = (
+    q = (
         db.query(CarSales, Car.price, Car.energy_type, Brand.name, Car.name)
         .join(Car, Car.id == CarSales.car_id)
         .join(Brand, Brand.id == Car.brand_id)
-        .all()
     )
+    # brandId 是品牌维度，必须经 Car.brand_id 筛选，不能与 CarSales.car_id 混用
     if brandId:
-        rows = [r for r in rows if r[0].car_id == brandId]
-
+        q = q.filter(Car.brand_id == brandId)
+    rows = q.all()
     rows.sort(key=lambda r: (r[0].car_id, r[0].month))
 
     items = []
@@ -89,13 +86,24 @@ def sales_trend(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = month_window(span, year, month)
-    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    factor = region_factor(db, region)
+    months = month_window(db, span, year, month)
+    if not months:
+        return {"months": [], "series": []}
 
-    total = monthly_series(rows, months, factor)
-    nev = monthly_series([r for r in rows if energy_out(r[4]) in ("BEV", "PHEV")], months, factor)
-    ice = monthly_series([r for r in rows if energy_out(r[4]) not in ("BEV", "PHEV")], months, factor)
+    if region:
+        # 指定地区：RegionalSales 真实月度（无能源/品牌细分维度）
+        vals = _regional_monthly(db, region).get(region, {})
+        return {
+            "months": months,
+            "series": [
+                {"name": f"{region}·总销量", "data": [vals.get(m, 0) for m in months], "type": "line"}
+            ],
+        }
+
+    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
+    total = monthly_series(rows, months)
+    nev = monthly_series([r for r in rows if energy_out(r[4]) in ("BEV", "PHEV")], months)
+    ice = monthly_series([r for r in rows if energy_out(r[4]) not in ("BEV", "PHEV")], months)
     return {
         "months": months,
         "series": [
@@ -120,8 +128,8 @@ def sales_ranking(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
-    return _brand_rank(db, months, limit, region_factor(db, region))
+    months = month_window(db, span, year, month)
+    return _brand_rank(db, months, limit)
 
 
 @router.get("/sales/region", summary="地区销量")
@@ -137,18 +145,12 @@ def sales_region(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
+    """地区销量统一 RegionalSales 口径（车型级筛选参数不参与地区聚合）"""
+    months = month_window(db, span, year, month)
     items = _region_items(db, months)
     if region:
         hit = next((i for i in items if i["name"] == region), None)
         return [hit] if hit else items
-    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    filtered = sum(int(r[2] or 0) for r in rows if r[1].strftime("%Y-%m") in months)
-    national = sum(int(r[2] or 0) for r in fetch_sales_rows(db) if r[1].strftime("%Y-%m") in months)
-    scale = filtered / national if national else 1.0
-    for item in items:
-        item["value"] = round(item["value"] * scale)
-    items.sort(key=lambda x: x["value"], reverse=True)
     return items
 
 

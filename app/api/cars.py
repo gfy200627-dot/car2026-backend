@@ -16,9 +16,10 @@ from app.utils.serialize import (
     ENERGY_LABEL,
     ENERGY_TYPES,
     PRICE_BUCKETS,
+    available_months,
     car_to_dict,
 )
-from app.utils.series import build_months, parse_month
+from app.utils.series import parse_month, prev_year_month
 
 router = APIRouter()
 
@@ -106,7 +107,7 @@ def cars_options(db: Session = Depends(get_db), current: UserSchema = Depends(ge
         "years": sorted(years, reverse=True),
         "priceBuckets": [{"label": b["label"], "min": b["min"], "max": b["max"]} for b in PRICE_BUCKETS],
         "regions": [r.name for r in db.query(Region).order_by(Region.id).all()],
-        "months": build_months(18),
+        "months": available_months(db),
     }
 
 
@@ -129,19 +130,18 @@ def car_sales(
     if not car:
         raise HTTPException(status_code=404, detail="车型不存在")
 
-    months = build_months(24)
+    months_all = available_months(db)
     rows = db.query(CarSales.month, CarSales.sales).filter(CarSales.car_id == car_id).all()
     series_map = {(m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7]): s for m, s in rows}
-    series = [series_map.get(m, 0) for m in months]
 
-    use = months[-min(max(span, 1), 24):]
-    start = len(months) - len(use)
-    points = [{"month": m, "value": series[start + i]} for i, m in enumerate(use)]
+    use = months_all[-min(max(span, 1), len(months_all)):] if months_all else []
+    points = [{"month": m, "value": series_map.get(m, 0)} for m in use]
+    # 同比：仅当该车型上一年同月有真实销量时计算，缺失月份不当作 0 参与
     yoy = []
-    for i in range(len(use)):
-        prev_idx = len(series) - len(use) - 12 + i
-        prev = series[prev_idx] if prev_idx >= 0 else 0
-        yoy.append(round((series[start + i] - prev) / prev * 100, 1) if prev else 0)
+    for m in use:
+        prev = series_map.get(prev_year_month(m), 0)
+        cur = series_map.get(m, 0)
+        yoy.append(round((cur - prev) / prev * 100, 1) if prev else 0)
 
     brand_name = car.brand_rel.name if car.brand_rel else ""
     return {"carId": car_id, "carName": f"{brand_name} {car.name}", "points": points, "yoy": yoy}

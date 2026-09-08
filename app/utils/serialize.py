@@ -7,8 +7,9 @@
 from datetime import date
 from typing import Optional
 
-from app.models import Car
-from app.utils.series import build_months
+from sqlalchemy.orm import Session
+
+from app.models import Car, CarSales
 
 ENERGY_TYPES = ["BEV", "PHEV", "HEV", "ICE"]
 ENERGY_LABEL = {"BEV": "纯电", "PHEV": "插电混动", "HEV": "油电混动", "ICE": "燃油"}
@@ -41,22 +42,35 @@ def price_bucket_label(price: float) -> str:
     return "50万以上"
 
 
+def available_months(db: Session) -> list[str]:
+    """CarSales 实际存在的月份（升序）——所有时间序列 API 的唯一时间轴来源。
+
+    真实数据当前覆盖 2025-01 ~ 2026-06；随数据扩展自然延伸到 24 个月及以上，
+    不会出现数据库中不存在的月份被当作 0 参与计算。
+    """
+    rows = db.query(CarSales.month).distinct().all()
+    return sorted(
+        m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7]
+        for (m,) in rows
+    )
+
+
 def month_window(
+    db: Session,
     span: int = 12,
     year: Optional[int] = None,
     month: Optional[int] = None,
 ) -> list[str]:
-    """与 Mock monthWindow 一致：指定 year(+month) 时取该期，否则取最近 span 个月"""
-    months = build_months(18)
+    """月份窗口：指定 year(+month) 时取该期（须真实存在），否则取真实数据范围内最近 span 个月"""
+    months = available_months(db)
     if year and month:
         target = f"{year}-{int(month):02d}"
-        if target in months:
-            return [target]
+        return [target] if target in months else []
     if year:
         hit = [m for m in months if m.startswith(str(year))]
         if hit:
             return hit
-    return months[-min(max(span, 1), len(months)):]
+    return months[-min(max(span, 1), len(months)):] if months else []
 
 
 def car_to_dict(car: Car) -> dict:

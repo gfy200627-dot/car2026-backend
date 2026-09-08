@@ -1,8 +1,9 @@
-"""市场分析 API（对齐 src/api/market.ts + src/mock/market.ts 口径）
+"""市场分析 API（对齐 src/api/market.ts）
 
-聚合逻辑与前端 Mock 保持一致：
-- 月份窗口：指定 year(+month) 取该期，否则取最近 span 个月
-- 地区筛选：按 Region.weight 份额折算
+聚合口径：
+- 时间窗口一律取自 CarSales 实际存在的月份（available_months），不构造不存在的月份
+- 地区维度统一使用 RegionalSales 真实数据，不再用 全国销量 × Region.weight 估算
+  （RegionalSales 无能源/品牌/价格维度，相关筛选参数保留但仅作用于车型级指标）
 - 能源口径：EREV 并入 PHEV
 """
 
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.database.session import get_db
-from app.models import Brand, Car, CarSales, Region
+from app.models import Brand, Car, CarSales, Region, RegionalSales
 from app.schemas.user import UserSchema
 from app.utils.serialize import (
     CAR_CATEGORIES,
@@ -23,11 +24,12 @@ from app.utils.serialize import (
     ENERGY_TYPES,
     PRICE_BUCKETS,
     UPDATED_AT,
+    available_months,
     energy_out,
     month_window,
     price_bucket_label,
 )
-from app.utils.series import build_months
+from app.utils.series import calc_yoy, prev_year_month
 
 router = APIRouter()
 
@@ -73,31 +75,18 @@ def fetch_sales_rows(
     return q.all()
 
 
-def region_factor(db: Session, region: Optional[str]) -> float:
-    """地区筛选 → 全国份额缩放系数"""
-    if not region:
-        return 1.0
-    total = sum(float(r[0] or 0) for r in db.query(Region.weight).all())
-    seed = db.query(Region.weight).filter(Region.name == region).scalar()
-    if seed is None or not total:
-        return 1.0
-    return float(seed) / total
-
-
-def monthly_series(rows, months: list[str], factor: float = 1.0) -> dict[str, float]:
-    """明细行 → month → 总销量（含缩放）"""
+def monthly_series(rows, months: list[str]) -> dict[str, float]:
+    """明细行 → month → 总销量"""
     out = {m: 0.0 for m in months}
     for r in rows:
         key = _mk(r[1])
         if key in out:
             out[key] += int(r[2] or 0)
-    if factor != 1.0:
-        out = {k: v * factor for k, v in out.items()}
     return out
 
 
 def match_rows(rows, keyword: Optional[str]):
-    """keyword 在 Python 侧兜底过滤（与 Mock hay 口径一致：品牌+车型名+代号+类别）"""
+    """keyword 在 Python 侧兜底过滤（口径：品牌+车型名+代号+类别）"""
     if not keyword:
         return rows
     kw = keyword.strip().lower()
@@ -105,9 +94,25 @@ def match_rows(rows, keyword: Optional[str]):
     return [r for r in rows if kw in f"{r[7]}{r[8]}{r[9]}{r[5]}".lower()]
 
 
+def _regional_monthly(db: Session, region: Optional[str] = None) -> dict[str, dict[str, int]]:
+    """RegionalSales 真实月度：region 名 → month → sales（NULL 维度行 = 全国分地区口径）"""
+    q = (
+        db.query(Region.name, RegionalSales.month, F.sum(RegionalSales.sales))
+        .join(Region, Region.id == RegionalSales.region_id)
+        .filter(RegionalSales.energy_type.is_(None), RegionalSales.brand_id.is_(None))
+        .group_by(Region.name, RegionalSales.month)
+    )
+    if region:
+        q = q.filter(Region.name == region)
+    out: dict[str, dict[str, int]] = {}
+    for name, m, s in q.all():
+        out.setdefault(name, {})[_mk(m)] = int(s or 0)
+    return out
+
+
 @router.get("/market/options", summary="市场分析筛选选项")
 def market_options(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(18)
+    months = available_months(db)
     return {
         "years": sorted({m[:4] for m in months}),
         "months": list(range(1, 13)),
@@ -132,13 +137,25 @@ def market_trend(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = month_window(span, year, month)
-    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    factor = region_factor(db, region)
+    months = month_window(db, span, year, month)
+    if not months:
+        return {"months": [], "series": []}
 
-    total = monthly_series(rows, months, factor)
-    nev = monthly_series([r for r in rows if energy_out(r[4]) in NEV], months, factor)
-    ice = monthly_series([r for r in rows if energy_out(r[4]) not in NEV], months, factor)
+    if region:
+        # 指定地区：直接使用 RegionalSales 真实月度（无能源/品牌细分维度）
+        rmap = _regional_monthly(db, region)
+        vals = rmap.get(region, {})
+        return {
+            "months": months,
+            "series": [
+                {"name": f"{region}·总销量", "data": [vals.get(m, 0) for m in months], "type": "line"}
+            ],
+        }
+
+    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
+    total = monthly_series(rows, months)
+    nev = monthly_series([r for r in rows if energy_out(r[4]) in NEV], months)
+    ice = monthly_series([r for r in rows if energy_out(r[4]) not in NEV], months)
 
     return {
         "months": months,
@@ -163,8 +180,8 @@ def market_share(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = month_window(span, year, month)
-    # 份额按全部品牌计算（与 Mock 一致：忽略 brandId）
+    months = month_window(db, span, year, month)
+    # 份额按全部品牌计算（与前端图表口径一致：忽略 brandId/region）
     rows = match_rows(fetch_sales_rows(db, energyType=energyType, category=category), keyword)
     brand_names = {b.id: b.name for b in db.query(Brand).all()}
 
@@ -219,55 +236,35 @@ def market_penetration(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = month_window(span, year, month)
+    # 渗透率依赖能源维度，RegionalSales 无该细分，region 参数不参与（全国口径）
+    months = month_window(db, span, year, month)
     rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    factor = region_factor(db, region)
 
     values = []
     for m in months:
-        total = sum(int(r[2] or 0) for r in rows if _mk(r[1]) == m) * factor
-        nev = sum(int(r[2] or 0) for r in rows if _mk(r[1]) == m and energy_out(r[4]) in NEV) * factor
+        total = sum(int(r[2] or 0) for r in rows if _mk(r[1]) == m)
+        nev = sum(int(r[2] or 0) for r in rows if _mk(r[1]) == m and energy_out(r[4]) in NEV)
         values.append(round(nev / total * 100, 1) if total else 0)
     return {"months": months, "values": values}
 
 
-def _region_items(db: Session, months: list[str], scale: float = 1.0) -> list[dict]:
-    """地区近 N 月销量（NULL 维度行 = 全国口径），yoy 与上一窗口比较"""
-    from app.models import RegionalSales
+def _region_items(db: Session, months: list[str]) -> list[dict]:
+    """地区近 N 月销量（RegionalSales 真实数据），同比仅与上一年同月真实数据比较"""
+    rmap = _regional_monthly(db)
+    regions = {r.name: r for r in db.query(Region).all()}
 
-    rows = (
-        db.query(RegionalSales.region_id, RegionalSales.month, F.sum(RegionalSales.sales))
-        .filter(RegionalSales.energy_type.is_(None), RegionalSales.brand_id.is_(None))
-        .group_by(RegionalSales.region_id, RegionalSales.month)
-        .all()
-    )
-    regions = {r.id: r for r in db.query(Region).all()}
-    prev_months = build_months(24)
-    cur_start = prev_months.index(months[0]) if months and months[0] in prev_months else len(prev_months) - len(months)
-    prev_window = prev_months[max(cur_start - len(months), 0):cur_start]
-
-    cur_map: dict[int, int] = {}
-    prev_map: dict[int, int] = {}
-    for rid, m, s in rows:
-        key = _mk(m)
-        if key in months:
-            cur_map[rid] = cur_map.get(rid, 0) + int(s or 0)
-        elif key in prev_window:
-            prev_map[rid] = prev_map.get(rid, 0) + int(s or 0)
-
-    def _yoy(cur: int, prev: int) -> float:
-        return round((cur - prev) / prev * 100, 1) if prev else 0
-
-    items = [
-        {
-            "name": regions[rid].name,
-            "value": round(val * scale),
-            "yoy": _yoy(val, prev_map.get(rid, 0)),
-            "penetration": round(float(regions[rid].penetration), 1),
-        }
-        for rid, val in cur_map.items()
-        if rid in regions
-    ]
+    items = []
+    for name, vals in rmap.items():
+        value = sum(vals.get(m, 0) for m in months)
+        region_row = regions.get(name)
+        if region_row is None or value <= 0:
+            continue
+        items.append({
+            "name": name,
+            "value": value,
+            "yoy": calc_yoy(vals, months),
+            "penetration": round(float(region_row.penetration), 1),
+        })
     items.sort(key=lambda x: x["value"], reverse=True)
     return items
 
@@ -285,21 +282,14 @@ def market_region(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
+    """地区销量统一 RegionalSales 口径；车型级筛选（brandId/energyType/keyword）
+    在地区数据中无真实细分维度，不参与本接口计算"""
+    months = month_window(db, span, year, month)
     items = _region_items(db, months)
 
     if region:
         hit = next((i for i in items if i["name"] == region), None)
         return [hit] if hit else items
-
-    # 其他筛选联动：按筛选量级 / 全国量级 缩放（与 Mock 一致）
-    rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    filtered = sum(int(r[2] or 0) for r in rows if _mk(r[1]) in months)
-    national = sum(int(r[2] or 0) for r in fetch_sales_rows(db) if _mk(r[1]) in months)
-    scale = filtered / national if national else 1.0
-    for item in items:
-        item["value"] = round(item["value"] * scale)
-    items.sort(key=lambda x: x["value"], reverse=True)
     return items
 
 
@@ -316,21 +306,21 @@ def market_energy(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
+    # 能源结构为全国口径（RegionalSales 无能源细分，region 不参与）
+    months = month_window(db, span, year, month)
     rows = match_rows(fetch_sales_rows(db, brandId=brandId, category=category), keyword)
-    factor = region_factor(db, region)
 
     values: dict[str, float] = {e: 0.0 for e in ENERGY_TYPES}
     for r in rows:
         key = _mk(r[1])
         if key in months:
             values[energy_out(r[4])] += int(r[2] or 0)
-    total = sum(values.values()) * factor
+    total = sum(values.values())
     out = [
         {
             "name": ENERGY_LABEL[e],
-            "value": round(values[e] * factor),
-            "ratio": round(values[e] * factor / total, 4) if total else 0,
+            "value": round(values[e]),
+            "ratio": round(values[e] / total, 4) if total else 0,
         }
         for e in ENERGY_TYPES
     ]
@@ -350,46 +340,42 @@ def market_price(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
+    # 价格分布为全国口径（RegionalSales 无价格维度，region 不参与）
+    months = month_window(db, span, year, month)
     rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType, category=category), keyword)
-    factor = region_factor(db, region)
 
     buckets = {b["label"]: 0.0 for b in PRICE_BUCKETS}
     for r in rows:
         key = _mk(r[1])
         if key in months:
             buckets[price_bucket_label(float(r[3]))] += int(r[2] or 0)
-    return [{"label": b["label"], "value": round(buckets[b["label"]] * factor)} for b in PRICE_BUCKETS]
+    return [{"label": b["label"], "value": round(buckets[b["label"]])} for b in PRICE_BUCKETS]
 
 
-def _brand_rank(db: Session, months: list[str], limit: int, factor: float = 1.0) -> list[dict]:
-    """品牌销量排行：当前窗口 vs 上一窗口 yoy"""
+def _brand_rank(db: Session, months: list[str], limit: int) -> list[dict]:
+    """品牌销量排行：CarSales 聚合，同比仅与上一年同月真实数据比较"""
     rows = fetch_sales_rows(db)
     brand_names = {b.id: b.name for b in db.query(Brand).all()}
-    prev_months = build_months(24)
-    cur_start = prev_months.index(months[0]) if months and months[0] in prev_months else len(prev_months) - len(months)
-    prev_window = prev_months[max(cur_start - len(months), 0):cur_start]
 
-    cur_map: dict[int, int] = {}
-    prev_map: dict[int, int] = {}
+    brand_map: dict[int, dict[str, int]] = {}
     for r in rows:
+        bucket = brand_map.setdefault(r[6], {})
         key = _mk(r[1])
-        if key in months:
-            cur_map[r[6]] = cur_map.get(r[6], 0) + int(r[2] or 0)
-        elif key in prev_window:
-            prev_map[r[6]] = prev_map.get(r[6], 0) + int(r[2] or 0)
+        bucket[key] = bucket.get(key, 0) + int(r[2] or 0)
 
-    total = sum(cur_map.values()) * factor
+    total = sum(brand_map[bid].get(m, 0) for bid in brand_map for m in months)
     items = []
-    for bid, val in cur_map.items():
-        if bid not in brand_names or val <= 0:
+    for bid, vals in brand_map.items():
+        if bid not in brand_names:
             continue
-        prev = prev_map.get(bid, 0)
+        value = sum(vals.get(m, 0) for m in months)
+        if value <= 0:
+            continue
         items.append({
             "name": brand_names[bid],
-            "value": round(val * factor),
-            "share": round(val / total, 4) if total else 0,
-            "yoy": round((val - prev) / prev * 100, 1) if prev else 0,
+            "value": value,
+            "share": round(value / total, 4) if total else 0,
+            "yoy": calc_yoy(vals, months),
         })
     items.sort(key=lambda x: x["value"], reverse=True)
     return items[:limit]
@@ -409,8 +395,8 @@ def market_brand_rank(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
-    return _brand_rank(db, months, limit, region_factor(db, region))
+    months = month_window(db, span, year, month)
+    return _brand_rank(db, months, limit)
 
 
 @router.get("/market/category", summary="车型类别销量")
@@ -426,7 +412,7 @@ def market_category(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = month_window(span, year, month)
+    months = month_window(db, span, year, month)
     rows = match_rows(fetch_sales_rows(db, brandId=brandId, energyType=energyType), keyword)
 
     values: dict[str, int] = {c: 0 for c in CAR_CATEGORIES}
@@ -448,7 +434,7 @@ def market_category_trend(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)[-min(max(span, 1), 24):]
+    months = available_months(db)[-min(max(span, 1), 500):]
     rows = fetch_sales_rows(db)
 
     per_cat: dict[str, dict[str, int]] = {c: {m: 0 for m in months} for c in CAR_CATEGORIES}

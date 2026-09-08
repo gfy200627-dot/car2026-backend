@@ -1,7 +1,15 @@
 """pytest 契约测试：以 sqlite 内存库跑种子数据，验证 API 与前端 Mock 数据结构兼容
 
 字段命名与结构断言对齐 src/types/{api,business,dashboard}.ts 与 src/mock/*。
+另覆盖生产前修复项：brandId 筛选、真实时间窗口、CarSales 排行口径、
+RegionalSales 地区口径、预测 fallback 标识、Alembic 迁移。
 """
+
+import os
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,9 +20,15 @@ from sqlalchemy.pool import StaticPool
 from app.database.session import Base, get_db
 from app.main import app
 
+ROOT = Path(__file__).resolve().parents[1]
+
+# client fixture 内注入，供需要直查数据库断言的测试使用
+_TestSession = None
+
 
 @pytest.fixture(scope="module")
 def client():
+    global _TestSession
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -22,6 +36,7 @@ def client():
     )
     Base.metadata.create_all(bind=engine)
     TestingSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    _TestSession = TestingSession
 
     # 导入种子数据（确定性生成）
     from scripts.seed_demo import (
@@ -496,3 +511,142 @@ def test_admin_algorithms_logs_data_files(client, token):
     resp = client.delete(f"/api/admin/data-files/{file_id}", headers=headers)
     assert resp.status_code == 200
     assert resp.json() == {"id": file_id}
+
+
+# ============================ 生产前修复项 ============================
+
+from datetime import date  # noqa: E402
+
+from sqlalchemy import func as F  # noqa: E402
+
+from app.models import Brand, Car, CarSales, Region, RegionalSales, SalesPrediction  # noqa: E402
+
+
+def _available_months() -> list[str]:
+    """测试库中 CarSales 实际存在的月份（时间轴断言基准）"""
+    with _TestSession() as db:
+        rows = db.query(CarSales.month).distinct().all()
+        return sorted(m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7] for (m,) in rows)
+
+
+def test_sales_brandid_filters_by_car_brand(client, token):
+    """P0-1：/sales 的 brandId 必须经 Car.brand_id 筛选；
+    旧 bug 把 brandId 当 CarSales.car_id，brandId=2 时只会命中 car_id==2（属于品牌1）的行"""
+    brand2_ids = {
+        c["id"]
+        for c in client.get("/api/cars", params={"brandId": 2, "pageSize": 100}, headers=auth(token)).json()["list"]
+    }
+    assert brand2_ids
+
+    data = client.get("/api/sales", params={"brandId": 2, "span": 18, "pageSize": 500}, headers=auth(token)).json()
+    assert data["total"] > 0
+    ids = {r["carId"] for r in data["list"]}
+    assert ids <= brand2_ids, f"brandId=2 返回了其他品牌的车型: {sorted(ids - brand2_ids)}"
+    assert 2 not in ids or 2 in brand2_ids  # car_id==2 属于品牌1，不允许混入
+
+
+def test_sales_trend_brandid_scope(client, token):
+    """P0-1：/sales/trend 的 brandId 同样只统计该品牌车型（品牌量之和不超过全国量）"""
+    nat = client.get("/api/sales/trend", params={"span": 12}, headers=auth(token)).json()["series"][0]["data"]
+    b1 = client.get("/api/sales/trend", params={"span": 12, "brandId": 1}, headers=auth(token)).json()["series"][0]["data"]
+    b2 = client.get("/api/sales/trend", params={"span": 12, "brandId": 2}, headers=auth(token)).json()["series"][0]["data"]
+    assert len(nat) == len(b1) == len(b2)
+    assert 0 < sum(b1) < sum(nat)
+    assert 0 < sum(b2) < sum(nat)
+    assert sum(b1) + sum(b2) <= sum(nat)
+
+
+def test_time_window_contains_only_real_months(client, token):
+    """P0-2：span 超过数据长度时不得构造不存在的月份（当前真实范围 2025-01~2026-06；
+    测试库为种子数据 24 个月，断言一律等于 CarSales 实际月份集合）"""
+    avail = _available_months()
+    assert avail
+
+    trend = client.get("/api/dashboard/trend", params={"span": 60}, headers=auth(token)).json()
+    assert trend["months"] == avail
+    assert len(trend["total"]) == len(avail)
+
+    cat = client.get("/api/market/category-trend", params={"span": 60}, headers=auth(token)).json()
+    assert cat["months"] == avail
+
+    trend12 = client.get("/api/dashboard/trend", params={"span": 12}, headers=auth(token)).json()
+    assert trend12["months"] == avail[-12:]
+
+
+def test_dashboard_car_ranking_matches_carsales_aggregation(client, token):
+    """P0-3：车型排行必须等于 CarSales 按最近 12 个真实月份聚合的结果"""
+    months = _available_months()[-12:]
+    with _TestSession() as db:
+        rows = (
+            db.query(Brand.name, Car.name, F.sum(CarSales.sales))
+            .join(Car, Car.id == CarSales.car_id)
+            .join(Brand, Brand.id == Car.brand_id)
+            .filter(CarSales.month >= date(int(months[0][:4]), int(months[0][5:7]), 1))
+            .filter(CarSales.month <= date(int(months[-1][:4]), int(months[-1][5:7]), 1))
+            .group_by(Brand.name, Car.name)
+            .all()
+        )
+    expected = sorted(
+        ((f"{bn} {cn}", int(total)) for bn, cn, total in rows),
+        key=lambda t: t[1],
+        reverse=True,
+    )[:10]
+
+    api = client.get("/api/dashboard/car-ranking", headers=auth(token)).json()
+    assert [(i["name"], i["value"]) for i in api] == expected
+
+
+def test_region_endpoints_use_regional_sales(client, token):
+    """P1-4：dashboard 与 market 的地区数据必须同源 RegionalSales，且与 DB 聚合一致"""
+    months = set(_available_months()[-12:])
+    with _TestSession() as db:
+        region_names = {r.id: r.name for r in db.query(Region).all()}
+        rows = (
+            db.query(RegionalSales.region_id, RegionalSales.month, F.sum(RegionalSales.sales))
+            .filter(RegionalSales.energy_type.is_(None), RegionalSales.brand_id.is_(None))
+            .group_by(RegionalSales.region_id, RegionalSales.month)
+            .all()
+        )
+    expected: dict[str, int] = {}
+    for rid, m, s in rows:
+        mk = m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7]
+        if mk in months:
+            expected[region_names[rid]] = expected.get(region_names[rid], 0) + int(s or 0)
+    expected = {k: v for k, v in expected.items() if v > 0}
+
+    dash = client.get("/api/dashboard/region", params={"span": 12}, headers=auth(token)).json()["regions"]
+    market = client.get("/api/market/region", params={"span": 12}, headers=auth(token)).json()
+
+    dash_map = {i["name"]: i["value"] for i in dash}
+    market_map = {i["name"]: i["value"] for i in market}
+    assert dash_map == expected
+    assert market_map == expected  # 同一地区同一窗口，两个页面同一套口径
+
+
+def test_prediction_fallback_not_labeled_as_model(client, token):
+    """P1-5：无真实模型结果时必须走 fallback 且不得冒充 XGBoost；落库标识可区分"""
+    resp = client.get("/api/predict/sales", params={"carId": 1, "horizon": 6}, headers=auth(token)).json()
+    assert resp["model"] == "趋势外推（Fallback）"
+    assert "XGBoost" not in resp["model"]
+
+    with _TestSession() as db:
+        names = {r.model_name for r in db.query(SalesPrediction).filter(SalesPrediction.car_id == 1).all()}
+    assert names == {"TrendSeasonal-Fallback"}
+
+
+def test_alembic_upgrade_head_builds_schema(tmp_path):
+    """Alembic：全新环境 alembic upgrade head 能建立完整库结构"""
+    db_file = tmp_path / "migration_test.db"
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{db_file.as_posix()}"}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=str(ROOT), env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    con = sqlite3.connect(db_file)
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert {"brands", "cars", "car_sales", "brand_sales", "energy_sales", "regional_sales",
+            "users", "orders", "inventories", "reviews", "sentiments",
+            "sales_predictions", "operation_logs"} <= tables

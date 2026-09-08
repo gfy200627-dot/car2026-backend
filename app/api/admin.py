@@ -21,8 +21,8 @@ from app.models import (
     User,
 )
 from app.schemas.user import UserSchema
-from app.utils.serialize import UPDATED_AT, car_to_dict, energy_out, paginate, sort_by
-from app.utils.series import build_months
+from app.utils.serialize import UPDATED_AT, available_months, car_to_dict, paginate, sort_by
+from app.utils.series import parse_month
 
 router = APIRouter()
 
@@ -43,16 +43,20 @@ def _dt_str(d: Optional[datetime]) -> Optional[str]:
 
 @router.get("/admin/overview", summary="后台概览")
 def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(24)
+    months = available_months(db)
+    if not months:
+        return {
+            "todaySales": 0, "monthSales": 0, "inventory": 0, "newUsers": 0, "newOrders": 0,
+            "recommendCount": 0, "predictTasks": 0, "deltas": {}, "updatedAt": UPDATED_AT, "isMock": False,
+        }
     last_month = months[-1]
-    prev_month = months[-2]
+    prev_month = months[-2] if len(months) >= 2 else None
 
     month_rows = dict(
         (m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7], int(s or 0))
         for m, s in db.query(CarSales.month, F.sum(CarSales.sales)).group_by(CarSales.month).all()
     )
     month_sales = month_rows.get(last_month, 0)
-    prev_sales = month_rows.get(prev_month, 0)
 
     inventory_total = db.query(F.sum(Inventory.quantity)).scalar() or 0
     prev_inventory = inventory_total  # 无历史快照，环比按 0 处理
@@ -69,6 +73,8 @@ def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(
 
     def pct(cur: float, prev: float) -> float:
         return round((cur - prev) / prev * 100, 1) if prev else 0
+
+    prev_sales = month_rows.get(prev_month, 0) if prev_month else 0
 
     return {
         "todaySales": round(month_sales / 30),
@@ -94,7 +100,7 @@ def admin_overview(db: Session = Depends(get_db), current: UserSchema = Depends(
 
 @router.get("/admin/sales-trend", summary="后台销售趋势")
 def admin_sales_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(12)
+    months = available_months(db)[-12:]
     sales_rows = dict(
         (m.strftime("%Y-%m") if isinstance(m, date) else str(m)[:7], int(s or 0))
         for m, s in db.query(CarSales.month, F.sum(CarSales.sales)).group_by(CarSales.month).all()
@@ -136,22 +142,29 @@ def admin_car_ranking(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
+    """基于 CarSales 真实月度聚合（最近 12 个月），不使用 Car.sales_12m 缓存字段"""
+    months = available_months(db)[-12:]
+    if not months:
+        return []
     rows = (
-        db.query(Car, Brand.name)
-        .join(Brand, Car.brand_id == Brand.id)
-        .order_by(Car.sales_12m.desc())
+        db.query(Car.id, Car.name, Brand.name, F.sum(CarSales.sales))
+        .join(CarSales, CarSales.car_id == Car.id)
+        .join(Brand, Brand.id == Car.brand_id)
+        .filter(CarSales.month >= parse_month(months[0]), CarSales.month <= parse_month(months[-1]))
+        .group_by(Car.id, Car.name, Brand.name)
+        .order_by(F.sum(CarSales.sales).desc())
         .limit(limit)
         .all()
     )
     return [
-        {"name": f"{brand_name} {car.name}", "value": car.sales_12m, "brand": brand_name}
-        for car, brand_name in rows
+        {"name": f"{brand_name} {car_name}", "value": int(total or 0), "brand": brand_name}
+        for _car_id, car_name, brand_name, total in rows
     ]
 
 
 @router.get("/admin/inventory-trend", summary="库存趋势")
 def admin_inventory_trend(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(12)
+    months = available_months(db)[-12:]
     total = db.query(F.sum(Inventory.quantity)).scalar() or 0
     data = [round(total * (0.86 + i * 0.014)) for i in range(len(months))]
     return {"months": months, "data": data}
@@ -316,26 +329,30 @@ def admin_sales(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)[-min(max(span, 1), 24):]
-    cars = (
-        db.query(Car, Brand.name)
-        .join(Brand, Car.brand_id == Brand.id)
-        .order_by(Car.sales_12m.desc())
-        .limit(60)
-        .all()
-    )
-    from app.models import CarSales as CS
+    months = available_months(db)[-min(max(span, 1), 500):]
 
-    series_rows = db.query(CS.car_id, CS.month, CS.sales).all()
+    series_rows = db.query(CarSales.car_id, CarSales.month, CarSales.sales).all()
     per_car: dict[int, dict[str, int]] = {}
     for car_id, m, s in series_rows:
         per_car.setdefault(car_id, {})[_mk(m)] = int(s or 0)
 
+    # TOP60 按当前窗口内 CarSales 聚合销量排序，不依赖 Car.sales_12m 缓存字段
+    totals = {cid: sum(vals.get(m, 0) for m in months) for cid, vals in per_car.items()}
+    top_ids = [cid for cid, _ in sorted(totals.items(), key=lambda t: t[1], reverse=True)[:60]]
+    car_rows = (
+        db.query(Car, Brand.name)
+        .join(Brand, Car.brand_id == Brand.id)
+        .filter(Car.id.in_(top_ids))
+        .all()
+    )
+    cars = {car.id: (car, brand_name) for car, brand_name in car_rows}
+
     items = []
-    for car, brand_name in cars:
-        values = [per_car.get(car.id, {}).get(m, 0) for m in months]
+    for cid in top_ids:
+        car, brand_name = cars[cid]
+        values = [per_car.get(cid, {}).get(m, 0) for m in months]
         items.append({
-            "carId": car.id,
+            "carId": cid,
             "carName": f"{brand_name} {car.name}",
             "brand": brand_name,
             "months": months,

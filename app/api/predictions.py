@@ -1,7 +1,12 @@
 """销量预测 API（对齐 src/api/predict.ts → GET /predict/sales）
 
-以 CarSales 历史为输入：近 6 月线性趋势 + 季节因子 + 确定性扰动外推，
-置信区间随步长放大；结果落库 sales_predictions（car+month+model 幂等）。
+两级来源，内部严格区分、绝不混用：
+1. 真实模型预测：导入的爬虫模型结果（sales_predictions.model_name='Crawl-XGBoost'），
+   覆盖该车型未来 horizon 全部月份时直接返回，API model 标识「XGBoost（真实模型预测）」
+2. Fallback：无真实模型结果时，以近 6 月线性趋势 + 季节因子外推兜底，
+   API model 标识「趋势外推（Fallback）」，落库 model_name='TrendSeasonal-Fallback'，
+   不冒充 XGBoost 等实际模型。
+历史序列以 CarSales 实际月份为准。
 """
 
 from datetime import date
@@ -15,8 +20,8 @@ from app.database.session import get_db
 from app.models import Brand, Car, CarSales, SalesPrediction
 from app.schemas.user import UserSchema
 from app.utils.rng import Rng, clamp, round as rng_round
-from app.utils.serialize import UPDATED_AT
-from app.utils.series import build_months, parse_month
+from app.utils.serialize import UPDATED_AT, available_months
+from app.utils.series import parse_month
 
 router = APIRouter()
 
@@ -25,6 +30,8 @@ SEASONAL = [0.88, 0.64, 1.02, 1.0, 1.05, 1.09, 0.94, 0.98, 1.08, 1.06, 1.13, 1.2
 
 # 真实爬取模型预测的落库标识（sales_prediction.csv，import_real_data 导入）
 CRAWL_MODEL = "Crawl-XGBoost"
+# fallback（趋势外推）的落库标识——与真实模型严格区分
+FALLBACK_MODEL = "TrendSeasonal-Fallback"
 
 
 def _add_month(month: str, delta: int) -> str:
@@ -65,8 +72,8 @@ def predict_sales(
             raise HTTPException(status_code=404, detail="暂无车型数据")
         target_name = f"{car.brand_rel.name} {car.name}" if car.brand_rel else car.name
 
-    # 历史 24 个月序列
-    all_months = build_months(24)
+    # 历史 24 个月序列（实际以数据库真实月份为准）
+    all_months = available_months(db)
     history_map: dict[str, int] = {}
     if car is not None:
         rows = db.query(CarSales.month, CarSales.sales).filter(CarSales.car_id == car.id).all()
@@ -118,7 +125,8 @@ def predict_sales(
             for m in future_months
         ]
         accuracy = round(sum(crawled_by_month[m].accuracy for m in future_months) / horizon, 3)
-        model_name = "XGBoost（爬虫实测预测）"
+        model_name = CRAWL_MODEL
+        api_model = "XGBoost（真实模型预测）"
     else:
         # 近 6 月线性趋势外推（与前端 Mock 同口径）
         recent = history_values[-6:]
@@ -147,7 +155,8 @@ def predict_sales(
             })
 
         accuracy = rng_round(clamp(0.9 - horizon * 0.004 + rng.float(-0.02, 0.035), 0.78, 0.96), 3)
-        model_name = "XGBoost + 季节因子融合" if horizon >= 12 else "XGBoost"
+        model_name = FALLBACK_MODEL
+        api_model = "趋势外推（Fallback）"
 
         # 落库（幂等：同 car+month+model 覆盖）
         if car is not None:
@@ -189,7 +198,7 @@ def predict_sales(
         "carId": car.id if car else None,
         "carName": target_name,
         "brand": car.brand_rel.name if car and car.brand_rel else (brand.name if brand else None),
-        "model": model_name,
+        "model": api_model,
         "accuracy": accuracy,
         "horizon": horizon,
         "history": history,

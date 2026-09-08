@@ -1,4 +1,9 @@
-"""Dashboard API（对齐 src/api/dashboard.ts + src/types/dashboard.ts）"""
+"""Dashboard API（对齐 src/api/dashboard.ts + src/types/dashboard.ts）
+
+时间轴约定：所有序列以 CarSales 实际存在的月份为准（available_months），
+不构造数据库中不存在的月份；同比仅在上一年同月有真实数据时计算。
+车型/品牌排行基于 CarSales / BrandSales 真实月度聚合，不依赖 Car.sales_12m 缓存字段。
+"""
 
 from datetime import date
 
@@ -15,10 +20,11 @@ from app.utils.serialize import (
     SOURCE,
     ENERGY_LABEL,
     PRICE_BUCKETS,
+    available_months,
     energy_out,
     price_bucket_label,
 )
-from app.utils.series import build_months
+from app.utils.series import calc_yoy, parse_month, prev_month, prev_year_month
 
 router = APIRouter()
 
@@ -61,42 +67,64 @@ def _avg_price_monthly(db: Session) -> dict[str, float]:
     return {_month_key(m): round(float(v or 0), 2) for m, v in rows}
 
 
-def _yoy(cur: float, prev: float) -> float:
-    return round((cur - prev) / prev * 100, 1) if prev else 0
+def _brand_monthly(db: Session) -> dict[int, dict[str, int]]:
+    """brand_id → month → sales（BrandSales 真实月度）"""
+    rows = db.query(BrandSales.brand_id, BrandSales.month, BrandSales.sales).all()
+    out: dict[int, dict[str, int]] = {}
+    for bid, m, s in rows:
+        out.setdefault(bid, {})[_month_key(m)] = int(s or 0)
+    return out
+
+
+def _car_monthly(db: Session) -> dict[int, dict[str, int]]:
+    """car_id → month → sales（CarSales 真实月度）"""
+    rows = db.query(CarSales.car_id, CarSales.month, CarSales.sales).all()
+    out: dict[int, dict[str, int]] = {}
+    for cid, m, s in rows:
+        out.setdefault(cid, {})[_month_key(m)] = int(s or 0)
+    return out
+
+
+def _monthly_yoy(monthly: dict[str, int], m: str) -> float:
+    """单月同比：上一年同月无真实数据时返回 0，不把缺失月当 0 参与计算"""
+    pm = prev_year_month(m)
+    prev = monthly.get(pm, 0)
+    return round((monthly.get(m, 0) - prev) / prev * 100, 1) if prev else 0
 
 
 @router.get("/dashboard/overview", summary="驾驶舱概览")
 def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(24)
+    months = available_months(db)
+    if not months:
+        return {"metrics": [], "hotBrands": [], "updatedAt": UPDATED_AT, "source": SOURCE, "isMock": False}
     last12 = months[-12:]
-    prev12 = months[-24:-12]
 
     national = _national_monthly(db)
     energy = _energy_monthly(db)
     avg_price = _avg_price_monthly(db)
 
     national12 = sum(national.get(m, 0) for m in last12)
-    national_prev = sum(national.get(m, 0) for m in prev12)
-    nev12 = sum(energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0) for m in last12)
-    nev_prev = sum(energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0) for m in prev12)
+    nev_map = {m: energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0) for m in months}
+    nev12 = sum(nev_map[m] for m in last12)
 
-    pen_series = []
-    for m in months:
-        total = national.get(m, 0)
-        nev = energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0)
-        pen_series.append(round(nev / total * 100, 1) if total else 0)
+    pen_map = {
+        m: round(nev_map[m] / national[m] * 100, 1) if national.get(m) else 0
+        for m in months
+    }
+    latest = months[-1]
+    pen_prev = prev_year_month(latest)
+    pen_change = round(pen_map[latest] - pen_map[pen_prev], 1) if pen_prev in pen_map else 0
 
-    # 销量加权平均成交价
-    price12 = round(sum(avg_price.get(m, 0) for m in last12) / max(len(last12), 1), 2)
-    price_prev = round(sum(avg_price.get(m, 0) for m in prev12) / max(len(prev12), 1), 2)
+    price12 = round(sum(avg_price.get(m, 0) for m in last12) / len(last12), 2)
 
-    brand12 = _brand_window(db, last12)
-    brand_prev = _brand_window(db, prev12)
+    brand_map = _brand_monthly(db)
     brands = {b.id: b for b in db.query(Brand).all()}
-    brand_rank = sorted(
-        ((bid, int(val or 0)) for bid, val in brand12.items()), key=lambda t: t[1], reverse=True
-    )
-    top_brand_id, top_brand_sales = (brand_rank[0] if brand_rank else (0, 0))
+    brand_cur = {
+        bid: sum(vals.get(m, 0) for m in last12)
+        for bid, vals in brand_map.items()
+    }
+    brand_rank = sorted(brand_cur.items(), key=lambda t: t[1], reverse=True)
+    top_brand_id, top_brand_sales = brand_rank[0] if brand_rank else (0, 0)
     top_brand = brands.get(top_brand_id)
 
     hot_brands = [
@@ -104,7 +132,7 @@ def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_cu
             "name": brands[bid].name,
             "value": val,
             "share": round(val / national12, 4) if national12 else 0,
-            "yoy": _yoy(val, brand_prev.get(bid, 0)),
+            "yoy": calc_yoy(brand_map[bid], last12),
         }
         for bid, val in brand_rank[:8]
         if bid in brands
@@ -116,19 +144,19 @@ def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_cu
             "label": "全国汽车销量",
             "value": national12,
             "unit": "辆",
-            "change": _yoy(national12, national_prev),
+            "change": calc_yoy(national, last12),
             "trend": [national.get(m, 0) for m in last12],
             "tone": "brand",
             "format": "int",
-            "hint": "最近 12 个月累计",
+            "hint": "真实数据最近 12 个月累计",
         },
         {
             "key": "nev",
             "label": "新能源汽车销量",
             "value": nev12,
             "unit": "辆",
-            "change": _yoy(nev12, nev_prev),
-            "trend": [energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0) for m in last12],
+            "change": calc_yoy(nev_map, last12),
+            "trend": [nev_map[m] for m in last12],
             "tone": "nev",
             "format": "int",
             "hint": "纯电 + 插电混动",
@@ -136,10 +164,10 @@ def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_cu
         {
             "key": "penetration",
             "label": "新能源渗透率",
-            "value": pen_series[-1],
+            "value": pen_map[latest],
             "unit": "%",
-            "change": round(pen_series[-1] - pen_series[-13], 1) if len(pen_series) >= 13 else 0,
-            "trend": pen_series[-12:],
+            "change": pen_change,
+            "trend": [pen_map[m] for m in last12],
             "tone": "cyan",
             "format": "percent",
             "hint": "最近完整月",
@@ -149,7 +177,7 @@ def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_cu
             "label": "平均成交价格",
             "value": price12,
             "unit": "万元",
-            "change": _yoy(price12, price_prev),
+            "change": calc_yoy(avg_price, last12),
             "trend": [avg_price.get(m, 0) for m in last12],
             "tone": "warn",
             "format": "price",
@@ -178,45 +206,24 @@ def overview(db: Session = Depends(get_db), current: UserSchema = Depends(get_cu
     }
 
 
-def _parse(month: str) -> date:
-    from app.utils.series import parse_month
-
-    return parse_month(month)
-
-
-def _brand_window(db: Session, months: list[str]) -> dict[int, int]:
-    if not months:
-        return {}
-    rows = (
-        db.query(BrandSales.brand_id, F.sum(BrandSales.sales))
-        .filter(BrandSales.month >= _parse(months[0]), BrandSales.month <= _parse(months[-1]))
-        .group_by(BrandSales.brand_id)
-        .all()
-    )
-    return {bid: int(s or 0) for bid, s in rows}
-
-
 @router.get("/dashboard/trend", summary="驾驶舱趋势")
 def trend(
     span: int = 18,
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)[-min(max(span, 1), 24):]
+    months = available_months(db)[-min(max(span, 1), 500):]
     national = _national_monthly(db)
     energy = _energy_monthly(db)
-    all_months = build_months(24)
 
     total, nev, ice, yoy = [], [], [], []
-    for i, m in enumerate(months):
+    for m in months:
         t = national.get(m, 0)
         n = energy.get(m, {}).get("BEV", 0) + energy.get(m, {}).get("PHEV", 0)
         total.append(t)
         nev.append(n)
         ice.append(max(t - n, 0))
-        prev_idx = all_months.index(m) - 12
-        prev = national.get(all_months[prev_idx], 0) if prev_idx >= 0 else 0
-        yoy.append(_yoy(t, prev))
+        yoy.append(_monthly_yoy(national, m))
 
     return {"months": months, "total": total, "nev": nev, "ice": ice, "yoy": yoy,
             "updatedAt": UPDATED_AT, "source": SOURCE, "isMock": False}
@@ -229,23 +236,20 @@ def brand_ranking(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    months = build_months(24)
-    cur = months[-min(max(span, 1), 12):]
-    prev = months[max(len(months) - len(cur) - 12, 0):len(months) - len(cur)]
-    cur_map = _brand_window(db, cur)
-    prev_map = _brand_window(db, prev)
+    months = available_months(db)[-min(max(span, 1), 500):]
+    brand_map = _brand_monthly(db)
     brands = {b.id: b for b in db.query(Brand).all()}
     national = _national_monthly(db)
-    total = sum(national.get(m, 0) for m in cur)
+    total = sum(national.get(m, 0) for m in months)
 
     items = [
         {
             "name": brands[bid].name,
-            "value": val,
-            "share": round(val / total, 4) if total else 0,
-            "yoy": _yoy(val, prev_map.get(bid, 0)),
+            "value": sum(vals.get(m, 0) for m in months),
+            "share": round(sum(vals.get(m, 0) for m in months) / total, 4) if total else 0,
+            "yoy": calc_yoy(vals, months),
         }
-        for bid, val in cur_map.items()
+        for bid, vals in brand_map.items()
         if bid in brands
     ]
     items.sort(key=lambda x: x["value"], reverse=True)
@@ -258,27 +262,33 @@ def car_ranking(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    rows = (
-        db.query(Car, Brand.name)
-        .join(Brand, Car.brand_id == Brand.id)
-        .order_by(Car.sales_12m.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
-            "name": f"{brand_name} {car.name}",
-            "value": car.sales_12m,
-            "yoy": 0,
+    """基于 CarSales 真实月度聚合（当前数据范围内最近 12 个月），不使用 Car.sales_12m 缓存"""
+    months = available_months(db)[-12:]
+    car_map = _car_monthly(db)
+    totals = {
+        cid: sum(vals.get(m, 0) for m in months)
+        for cid, vals in car_map.items()
+    }
+    cars = {c.id: c for c in db.query(Car).filter(Car.id.in_(totals.keys())) if totals.get(c.id)}
+    brand_names = {b.id: b.name for b in db.query(Brand).all()}
+
+    items = []
+    for cid, value in sorted(totals.items(), key=lambda t: t[1], reverse=True)[:limit]:
+        car = cars.get(cid)
+        if not car:
+            continue
+        items.append({
+            "name": f"{brand_names.get(car.brand_id, '')} {car.name}",
+            "value": value,
+            "yoy": calc_yoy(car_map[cid], months),
             "extra": ENERGY_LABEL.get(energy_out(car.energy_type), energy_out(car.energy_type)),
-        }
-        for car, brand_name in rows
-    ]
+        })
+    return items
 
 
 @router.get("/dashboard/energy", summary="能源结构")
 def energy(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(24)
+    months = available_months(db)
     emap = _energy_monthly(db)
     latest = months[-1]
     latest_total = sum(emap.get(latest, {}).values())
@@ -307,40 +317,36 @@ def region(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)
-    cur = months[-min(max(span, 1), 12):]
-    prev = months[max(len(months) - len(cur) - 12, 0):len(months) - len(cur)]
+    """地区销量统一口径：RegionalSales（energy_type/brand_id 均为 NULL 的全国分地区行）"""
+    months = available_months(db)[-min(max(span, 1), 500):]
 
     rows = (
         db.query(RegionalSales.region_id, RegionalSales.month, F.sum(RegionalSales.sales))
         .filter(
             RegionalSales.energy_type.is_(None),
             RegionalSales.brand_id.is_(None),
-            RegionalSales.month >= _parse(prev[0] if prev else cur[0]),
         )
         .group_by(RegionalSales.region_id, RegionalSales.month)
         .all()
     )
-    cur_map: dict[int, int] = {}
-    prev_map: dict[int, int] = {}
+    rmap: dict[int, dict[str, int]] = {}
     for rid, m, s in rows:
-        key = _month_key(m)
-        if key in cur:
-            cur_map[rid] = cur_map.get(rid, 0) + int(s or 0)
-        elif key in prev:
-            prev_map[rid] = prev_map.get(rid, 0) + int(s or 0)
+        rmap.setdefault(rid, {})[_month_key(m)] = int(s or 0)
 
     regions = {r.id: r for r in db.query(Region).all()}
-    items = [
-        {
+    items = []
+    for rid, vals in rmap.items():
+        if rid not in regions:
+            continue
+        value = sum(vals.get(m, 0) for m in months)
+        if value <= 0:
+            continue
+        items.append({
             "name": regions[rid].name,
-            "value": val,
-            "yoy": _yoy(val, prev_map.get(rid, 0)),
+            "value": value,
+            "yoy": calc_yoy(vals, months),
             "penetration": round(float(regions[rid].penetration), 1),
-        }
-        for rid, val in cur_map.items()
-        if rid in regions
-    ]
+        })
     items.sort(key=lambda x: x["value"], reverse=True)
     top_pen = sorted(items, key=lambda x: x["penetration"], reverse=True)[:8]
     return {"regions": items, "topPenetration": top_pen,
@@ -349,11 +355,11 @@ def region(
 
 @router.get("/dashboard/price", summary="价格分布")
 def price(db: Session = Depends(get_db), current: UserSchema = Depends(get_current_user)) -> dict:
-    months = build_months(12)
+    months = available_months(db)[-12:]
     rows = (
         db.query(Car.price, F.sum(CarSales.sales))
         .join(CarSales, CarSales.car_id == Car.id)
-        .filter(CarSales.month >= _parse(months[0]))
+        .filter(CarSales.month >= parse_month(months[0]), CarSales.month <= parse_month(months[-1]))
         .group_by(Car.id)
         .all()
     )
@@ -370,19 +376,20 @@ def growth(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> dict:
-    months = build_months(24)
-    cur = months[-min(max(span, 1), 12):]
+    months = available_months(db)[-min(max(span, 1), 500):]
     national = _national_monthly(db)
     avg_price = _avg_price_monthly(db)
 
-    market_size = [round(national.get(m, 0) * avg_price.get(m, 0) / 10000, 2) for m in cur]
+    market_size = [round(national.get(m, 0) * avg_price.get(m, 0) / 10000, 2) for m in months]
     growth_rates = []
-    for i, m in enumerate(cur):
-        idx = months.index(m)
-        prev = national.get(months[idx - 1], 0) if idx >= 1 else 0
-        growth_rates.append(_yoy(national.get(m, 0), prev))
+    for m in months:
+        pm = prev_month(m)
+        if pm in national and national[pm]:
+            growth_rates.append(round((national.get(m, 0) - national[pm]) / national[pm] * 100, 1))
+        else:
+            growth_rates.append(0)
 
-    return {"months": cur, "marketSize": market_size, "growth": growth_rates,
+    return {"months": months, "marketSize": market_size, "growth": growth_rates,
             "updatedAt": UPDATED_AT, "source": SOURCE, "isMock": False}
 
 
@@ -392,21 +399,30 @@ def scatter(
     db: Session = Depends(get_db),
     current: UserSchema = Depends(get_current_user),
 ) -> list:
-    rows = (
-        db.query(Car, Brand.name)
-        .join(Brand, Car.brand_id == Brand.id)
-        .order_by(Car.sales_12m.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
+    """基于 CarSales 真实月度聚合（最近 12 个月），不使用 Car.sales_12m 缓存"""
+    months = available_months(db)[-12:]
+    car_map = _car_monthly(db)
+    totals = {
+        cid: sum(vals.get(m, 0) for m in months)
+        for cid, vals in car_map.items()
+    }
+    cars = {
+        c.id: c
+        for c in db.query(Car).filter(Car.id.in_(totals.keys()))
+    }
+    brand_names = {b.id: b.name for b in db.query(Brand).all()}
+
+    items = []
+    for cid, value in sorted(totals.items(), key=lambda t: t[1], reverse=True)[:limit]:
+        car = cars.get(cid)
+        if not car:
+            continue
+        items.append({
             "name": car.name,
-            "brand": brand_name,
+            "brand": brand_names.get(car.brand_id, ""),
             "price": round(float(car.price), 2),
-            "sales": car.sales_12m,
+            "sales": value,
             "rating": round(float(car.rating), 1),
             "energyType": ENERGY_LABEL.get(energy_out(car.energy_type), energy_out(car.energy_type)),
-        }
-        for car, brand_name in rows
-    ]
+        })
+    return items
