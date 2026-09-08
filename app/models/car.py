@@ -1,9 +1,10 @@
 """车型与车型别名词典"""
 
+import re
 from typing import List, Optional
 
 from sqlalchemy import JSON, Date, ForeignKey, Index, Integer, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.session import Base
 from app.models.mixins import TimestampMixin
@@ -59,6 +60,21 @@ class Car(TimestampMixin, Base):
     brand_rel = relationship("Brand", back_populates="cars")
     sales = relationship("CarSales", back_populates="car_rel", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="car_rel")
+
+    @validates("image")
+    def _normalize_image_url(self, key: str, value: Optional[str]) -> Optional[str]:
+        """规范化车型图片地址，避免 Markdown 包装导致 VARCHAR(255) 超长。"""
+        if not value:
+            return None
+        value = str(value).strip()
+
+        # 兼容 [https://example.com/a.jpg](https://example.com/a.jpg) 这种误存格式。
+        match = re.fullmatch(r"\[.*?\]\((https?://[^)]+)\)", value)
+        if match:
+            value = match.group(1).strip()
+
+        # URL 仍超过数据库字段上限时不写入无效的截断 URL。
+        return value if len(value) <= 255 else None
 
 
 class ModelAlias(TimestampMixin, Base):
