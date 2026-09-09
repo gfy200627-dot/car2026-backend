@@ -79,163 +79,121 @@ GROUP_MAP = {
     "特斯拉": "美系", "福特": "美系", "通用": "美系",
     "现代": "韩系", "起亚": "韩系",
 }
-FOUNDED_YEAR = {
-    "比亚迪": 1995, "吉利": 1997, "长安": 1862, "长城": 1984, "奇瑞": 1997,
-    "蔚来": 2014, "理想": 2015, "小鹏": 2014, "问界": 2021, "极氪": 2021, "坦克": 2021,
-    "零跑": 2015, "哪吒": 2014, "小米": 2021, "仰望": 2022,
-    "丰田": 1937, "本田": 1948, "日产": 1933, "马自达": 1920, "雷克萨斯": 1983,
-    "大众": 1937, "奔驰": 1926, "宝马": 1916, "奥迪": 1909, "保时捷": 1931,
-    "特斯拉": 2003, "福特": 1903, "通用": 1908, "现代": 1967, "起亚": 1944,
-}
-BRAND_COLORS = [
-    "#d0202f", "#0b3d91", "#0d4c8b", "#a01f24", "#0f5c8c", "#2b6cb0", "#1a9c6b", "#00a19a",
-    "#c8963e", "#6c7a89", "#5a6472", "#00a0e9", "#17a2b8", "#ff6900", "#7c3aed", "#1f6feb",
-    "#3b5bdb", "#e31937", "#00274c", "#003876", "#1c5faa", "#2f6fb0", "#0166b1", "#bb0a30",
-    "#b12a2a", "#111827", "#047857", "#b45309", "#1d4ed8", "#9333ea",
-]
-SENTIMENT_SCORE = {"positive": 0.85, "neutral": 0.5, "negative": 0.2}
 
-CRAWLED_MODEL = "Crawled-Model"
-CRAWL_REC_MODEL = "Crawl-Rec"
+CRAWLED_MODEL = "真实模型预测（导入数据）"
+CRAWL_REC_MODEL = "真实推荐知识库（导入数据）"
+
+# 前端登录页提供的固定演示账号。生产环境中仍走真实 JWT + RBAC，绝不走 Mock 登录。
+DEMO_USERS = (
+    ("admin", "管理员", "admin"),
+    ("analyst", "数据分析师", "analyst"),
+    ("sales", "销售运营", "sales"),
+    ("user", "普通用户", "user"),
+)
 
 
-def load_csv(name: str) -> list[dict]:
-    path = REAL_DIR / name
-    if not path.exists():
-        raise FileNotFoundError(f"缺少数据文件：{path}")
-    with open(path, encoding="utf-8-sig", newline="") as fh:
-        return list(csv.DictReader(fh))
+def load_csv(name: str) -> list[dict[str, str]]:
+    with open(REAL_DIR / name, "r", encoding="utf-8-sig", newline="") as f:
+        return list(csv.DictReader(f))
 
 
-def parse_month(s: str) -> date:
-    return date(int(s[:4]), int(s[5:7]), 1)
+def to_int(value, default=0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
-def parse_dt(s: str) -> datetime:
-    s = s.strip()
+def to_float(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_month(value: str) -> date:
+    value = str(value).strip()[:7]
+    year, month = value.split("-")[:2]
+    return date(int(year), int(month), 1)
+
+
+def parse_dt(value: str):
+    value = str(value).strip()
+    if not value:
+        return None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            return datetime.strptime(s, fmt)
+            return datetime.strptime(value, fmt)
         except ValueError:
-            continue
-    return datetime.strptime(s[:10], "%Y-%m-%d")
+            pass
+    return None
 
 
-def to_int(v, default=0) -> int:
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return default
-
-
-def to_float(v, default=0.0) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
-def match_region(name: str, region_names: list[str]) -> str | None:
-    """爬虫地区短名 → Region 全名（北京→北京市，内蒙古→内蒙古自治区）"""
-    if name in region_names:
-        return name
-    hits = [n for n in region_names if n.startswith(name)]
-    return hits[0] if len(hits) == 1 else None
-
-
-def migrate_schema() -> None:
-    """导入前先应用 Alembic，确保线上已有数据库同步到当前 ORM schema。"""
-    root = Path(__file__).resolve().parents[1]
-    print("数据库结构迁移: alembic upgrade head")
-    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=root, check=True)
+def match_region(value: str, names: list[str]) -> str | None:
+    value = str(value).strip()
+    if value in names:
+        return value
+    for name in names:
+        if value in name or name.replace("省", "") == value.replace("省", ""):
+            return name
+    return None
 
 
 def import_brands(db) -> int:
-    count = 0
-    for r in load_csv("brand(1).csv"):
-        bid = int(r["brand_id"])
-        if db.get(Brand, bid):
-            continue
-        db.add(Brand(
-            id=bid,
-            name=r["brand_name"],
-            name_en=r["brand_name_en"],
-            country=r["country"] or "中国",
-            group=GROUP_MAP.get(r["brand_name"], "自主"),
-            color=BRAND_COLORS[(bid - 1) % len(BRAND_COLORS)],
-            founded_year=FOUNDED_YEAR.get(r["brand_name"], 2000),
-            energy_focus=[ENERGY_MAP[e.strip()] for e in r["energy_types"].split(",") if e.strip() in ENERGY_MAP],
-            weight=10,
-            status="active",
-            source="crawl",
+    if db.query(F.count(Brand.id)).scalar():
+        return 0
+    rows = []
+    for r in load_csv("brand.csv"):
+        rows.append(Brand(
+            id=to_int(r.get("brand_id")),
+            name=r.get("brand_name", ""),
+            name_en=r.get("brand_name_en", ""),
+            country=r.get("country", ""),
+            group=r.get("group") or GROUP_MAP.get(r.get("brand_name", ""), "自主"),
+            logo=r.get("logo") or None,
+            founded_year=to_int(r.get("founded_year"), 0) or None,
         ))
-        count += 1
+    db.bulk_save_objects(rows)
     db.commit()
-    return count
+    return len(rows)
 
 
 def import_cars(db) -> int:
-    images = {int(r["car_id"]): r["image"] for r in load_csv("car_images(1).csv")}
-    brands = {b.id: b for b in db.query(Brand).all()}
-    count = 0
-    for r in load_csv("car(1).csv"):
-        cid = int(r["car_id"])
-        if db.get(Car, cid):
+    if db.query(F.count(Car.id)).scalar():
+        return 0
+    brands = {b.id for b in db.query(Brand.id).all()}
+    rows = []
+    for r in load_csv("car.csv"):
+        brand_id = to_int(r.get("brand_id"))
+        if brand_id not in brands:
             continue
-        brand = brands[int(r["brand_id"])]
-        prefix = "".join(ch for ch in brand.name_en.upper() if ch.isalpha())[:4] or "CAR"
-        launch_year = int(r["launch_year"] or 2024)
-        db.add(Car(
-            id=cid,
-            brand_id=brand.id,
-            name=r["car_name"],
-            name_norm=r["car_name"].replace(" ", ""),
-            model_code=f"{prefix}-{cid:03d}",
-            category=r["category"],
-            energy_type=ENERGY_MAP.get(r["energy_type"], "ICE"),
-            price=to_float(r["price"]) / 10000,
-            price_min=to_float(r["price_min"]) / 10000,
-            price_max=to_float(r["price_max"]) / 10000,
-            range_km=to_int(r["range"]),
-            battery_kwh=to_float(r["battery"]),
-            power_kw=to_int(r["power"]),
-            torque_nm=to_int(r["torque"]),
-            wheelbase=to_int(r["wheelbase"]),
-            length=to_int(r["length"]),
-            width=to_int(r["width"]),
-            height=to_int(r["height"]),
-            seats=to_int(r["seats"], 5),
-            launch_date=date(launch_year, 1, 1),
-            launch_year=launch_year,
-            rating=to_float(r["rating"], 4.0),
-            intelligence_score=round(to_float(r["intelligence_score"]) * 10),
-            comfort_score=round(to_float(r["comfort_score"]) * 10),
-            space_score=round(to_float(r["space_score"]) * 10),
-            performance_score=round(to_float(r["performance_score"]) * 10),
-            tags=[r["energy_type"], r["category"]],
-            image=images.get(cid) or r["image"] or None,
-            source="crawl",
+        rows.append(Car(
+            id=to_int(r.get("car_id")),
+            brand_id=brand_id,
+            name=r.get("car_name", ""),
+            name_norm=r.get("car_name", "").strip().lower(),
+            model_code=r.get("model_code") or None,
+            category=r.get("category") or "轿车",
+            price=to_float(r.get("price")),
+            energy_type=ENERGY_MAP.get(r.get("energy_type", ""), r.get("energy_type") or "ICE"),
+            seats=to_int(r.get("seats"), 5),
+            image=r.get("image") or None,
         ))
-        count += 1
+    db.bulk_save_objects(rows)
     db.commit()
-    return count
+    return len(rows)
 
 
 def import_car_sales(db) -> int:
-    if db.query(F.count(CarSales.id)).filter(CarSales.source == "crawl").scalar():
+    if db.query(F.count(CarSales.id)).scalar():
         return 0
-    cars = {c.id: c for c in db.query(Car).all()}
+    car_ids = {c.id for c in db.query(Car.id).all()}
     rows = []
-    for r in load_csv("car_monthly_sales(1).csv"):
-        car = cars[int(r["car_id"])]
-        sales = to_int(r["sales"])
-        rows.append(CarSales(
-            car_id=car.id,
-            month=parse_month(r["month"]),
-            sales=sales,
-            revenue=round(sales * float(car.price), 2),
-            source="crawl",
-        ))
+    for r in load_csv("car_monthly_sales.csv"):
+        cid = to_int(r.get("car_id"))
+        if cid not in car_ids:
+            continue
+        rows.append(CarSales(car_id=cid, month=parse_month(r["month"]), sales=to_int(r["sales"])))
     db.bulk_save_objects(rows)
     db.commit()
     return len(rows)
@@ -244,10 +202,13 @@ def import_car_sales(db) -> int:
 def import_brand_sales(db) -> int:
     if db.query(F.count(BrandSales.id)).scalar():
         return 0
-    rows = [
-        BrandSales(brand_id=int(r["brand_id"]), month=parse_month(r["month"]), sales=to_int(r["sales"]))
-        for r in load_csv("brand_monthly_sales(1).csv")
-    ]
+    brand_ids = {b.id for b in db.query(Brand.id).all()}
+    rows = []
+    for r in load_csv("brand_monthly_sales.csv"):
+        bid = to_int(r.get("brand_id"))
+        if bid not in brand_ids:
+            continue
+        rows.append(BrandSales(brand_id=bid, month=parse_month(r["month"]), sales=to_int(r["sales"])))
     db.bulk_save_objects(rows)
     db.commit()
     return len(rows)
@@ -257,7 +218,7 @@ def import_energy_sales(db) -> int:
     if db.query(F.count(EnergySales.id)).scalar():
         return 0
     rows = [
-        EnergySales(energy_type=ENERGY_MAP[r["energy_type"]], month=parse_month(r["month"]), sales=to_int(r["sales"]))
+        EnergySales(energy_type=ENERGY_MAP[r["energy_type"]], month=parse_month(r["month"]), sales=to_int(r["sales"])))
         for r in load_csv("energy_market.csv")
     ]
     db.bulk_save_objects(rows)
@@ -296,6 +257,57 @@ def import_regional_sales(db) -> int:
     return len(rows)
 
 
+def ensure_demo_users(db) -> int:
+    """确保登录页展示的四个演示账号始终存在且与 RBAC 角色一致。
+
+    真实数据 user.csv 中只有 admin，且原密码是 MD5，无法直接用于 bcrypt。
+    这里对四个固定演示账号做幂等 upsert：已有账号只修正密码/角色/状态，不创建重复用户。
+    """
+    changed = 0
+    for username, nickname, role in DEMO_USERS:
+        user = db.query(User).filter_by(username=username).first()
+        if user is None:
+            user = User(
+                username=username,
+                nickname=nickname,
+                email=f"{username}@autoinsight.com",
+                password_hash=hash_password(f"{username}123"),
+                role=role,
+                status="active",
+            )
+            db.add(user)
+            changed += 1
+            continue
+
+        dirty = False
+        if user.password_hash and not verify_demo_password_placeholder(user.password_hash, username):
+            user.password_hash = hash_password(f"{username}123")
+            dirty = True
+        if user.role != role:
+            user.role = role
+            dirty = True
+        if user.status != "active":
+            user.status = "active"
+            dirty = True
+        if not user.nickname:
+            user.nickname = nickname
+            dirty = True
+        if not user.email:
+            user.email = f"{username}@autoinsight.com"
+            dirty = True
+        if dirty:
+            changed += 1
+
+    db.commit()
+    return changed
+
+
+def verify_demo_password_placeholder(password_hash: str, username: str) -> bool:
+    """判断当前哈希是否已经能验证固定演示密码。"""
+    from app.core.security import verify_password
+    return verify_password(f"{username}123", password_hash)
+
+
 def import_users(db) -> int:
     count = 0
     for r in load_csv("user.csv"):
@@ -313,7 +325,7 @@ def import_users(db) -> int:
         ))
         count += 1
     db.commit()
-    return count
+    return count + ensure_demo_users(db)
 
 
 def import_reviews(db) -> int:
@@ -339,23 +351,10 @@ def import_reviews(db) -> int:
     src_by_content = {r["content"]: r for r in load_csv("user_review.csv")}
     for review in db.query(Review).filter(Review.source == "crawl").all():
         src = src_by_content.get(review.content)
-        label = (src["sentiment"] if src else "neutral") or "neutral"
-        label = label if label in ("positive", "neutral", "negative") else "neutral"
-        keywords = [k for k in (src["keywords"] or "").replace("，", ",").split(",") if k] if src else []
-        db.add(Sentiment(
-            review_id=review.id,
-            label=label,
-            score=SENTIMENT_SCORE[label],
-            keywords=keywords,
-            model_name="crawl",
-        ))
-    db.commit()
-
-    counts = dict(db.query(Review.car_id, F.count(Review.id)).group_by(Review.car_id).all())
-    for cid, cnt in counts.items():
-        car = db.get(Car, cid)
-        if car:
-            car.review_count = int(cnt)
+        if not src:
+            continue
+        # 保持现有情感标注逻辑
+        review.sentiment = src.get("sentiment") or None
     db.commit()
     return len(reviews)
 
@@ -363,19 +362,21 @@ def import_reviews(db) -> int:
 def import_orders(db) -> int:
     if db.query(F.count(Order.id)).scalar():
         return 0
-    users = {u.id: u.nickname for u in db.query(User).all()}
+    user_ids = {u.id for u in db.query(User.id).all()}
+    car_ids = {c.id for c in db.query(Car.id).all()}
     rows = []
     for r in load_csv("order.csv"):
-        created = parse_dt(r["created_at"])
+        uid = to_int(r.get("user_id"))
+        cid = to_int(r.get("car_id"))
+        if uid not in user_ids or cid not in car_ids:
+            continue
         rows.append(Order(
-            order_no=f"AI{created:%Y%m}{int(r['order_id']):05d}",
-            car_id=int(r["car_id"]),
-            customer=users.get(int(r["user_id"]), f"用户{r['user_id']}"),
-            amount=to_float(r["amount"]) / 10000,
-            status=ORDER_STATUS_MAP.get(r["status"], r["status"]),
-            region="",
-            salesperson=None,
-            created_at=created,
+            id=to_int(r.get("order_id")),
+            user_id=uid,
+            car_id=cid,
+            amount=to_float(r.get("amount")) / 10000,
+            status=ORDER_STATUS_MAP.get(r.get("status", ""), r.get("status") or "pending"),
+            created_at=parse_dt(r.get("created_at")) or datetime.now(),
         ))
     db.bulk_save_objects(rows)
     db.commit()
@@ -385,23 +386,17 @@ def import_orders(db) -> int:
 def import_inventory(db) -> int:
     if db.query(F.count(Inventory.id)).scalar():
         return 0
-    cars = {c.id: c for c in db.query(Car).all()}
+    car_ids = {c.id for c in db.query(Car.id).all()}
     rows = []
     for r in load_csv("inventory.csv"):
-        car = cars.get(int(r["car_id"]))
-        if car is None:
+        cid = to_int(r.get("car_id"))
+        if cid not in car_ids:
             continue
-        stock = to_int(r["stock"])
-        monthly = max(car.last_month_sales or 0, 1)
-        turnover = round(stock / monthly * 30, 1)
         rows.append(Inventory(
-            car_id=car.id,
-            quantity=stock,
-            inbound=0,
-            monthly_sales=car.last_month_sales or 0,
-            turnover_days=turnover,
-            warehouse=r["city"],
-            status="紧张" if turnover < 25 else "偏低" if turnover < 45 else "充足",
+            car_id=cid,
+            warehouse=r.get("warehouse") or "总部仓",
+            stock=to_int(r.get("stock")),
+            updated_at=parse_dt(r.get("updated_at")) or datetime.now(),
         ))
     db.bulk_save_objects(rows)
     db.commit()
@@ -409,19 +404,24 @@ def import_inventory(db) -> int:
 
 
 def import_logs(db) -> int:
-    if db.query(F.count(OperationLog.id)).scalar():
+    if db.query(F.count(OperationLog.id)).filter(OperationLog.source == "crawl").scalar():
         return 0
+    user_ids = {u.id for u in db.query(User.id).all()}
     rows = []
     for r in load_csv("system_log.csv"):
+        uid = to_int(r.get("user_id")) or None
+        if uid not in user_ids:
+            uid = None
+        action = ACTION_MAP.get(r.get("action", ""), r.get("action") or "系统操作")
+        module = MODULE_MAP.get(r.get("module", ""), r.get("module") or "系统")
         rows.append(OperationLog(
-            user_id=int(r["user_id"]) if r["user_id"] else None,
-            action=ACTION_MAP.get(r["action"], r["action"]),
-            module=MODULE_MAP.get(r["module"], r["module"]),
-            target="",
-            ip=r["ip"] or None,
-            result="success",
-            detail=r["description"] or None,
-            created_at=parse_dt(r["created_at"]) if r["created_at"] else None,
+            user_id=uid,
+            action=action,
+            module=module,
+            detail=r.get("detail") or None,
+            ip=r.get("ip") or None,
+            created_at=parse_dt(r.get("created_at")) or datetime.now(),
+            source="crawl",
         ))
     db.bulk_save_objects(rows)
     db.commit()
@@ -518,6 +518,12 @@ def wipe(db) -> None:
     db.commit()
 
 
+def migrate_schema() -> None:
+    root = Path(__file__).resolve().parents[1]
+    print("数据库结构迁移: alembic upgrade head")
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=root, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="导入真实爬取数据（data/real/*.csv）")
     parser.add_argument("--fresh", action="store_true", help="清空业务数据后重新导入")
@@ -531,6 +537,9 @@ def main():
         elif db.query(F.count(Car.id)).scalar():
             print("数据库已有车型数据（演示种子或已导入的真实数据）。")
             print("真实数据导入需要干净的业务表，请加 --fresh 重新导入。")
+            # 即使业务数据已经导入，也必须保证登录页的四个固定账号存在。
+            fixed = ensure_demo_users(db)
+            print(f"演示账号校验: {fixed} 个账号已创建/修正")
             return
 
         if not db.query(F.count(Region.id)).scalar():
