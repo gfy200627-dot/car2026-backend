@@ -7,10 +7,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# When this file is executed as `python scripts/import_real_data.py`, Python puts
+# `scripts/` on sys.path instead of the repository root. Add the project root so
+# imports such as `from app...` work both locally and on Render.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from sqlalchemy import func as F
 from sqlalchemy.orm import Session
 
-ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data" / "real"
 
 from app.database.session import SessionLocal
