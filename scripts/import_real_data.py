@@ -214,10 +214,10 @@ def import_predictions(db: Session) -> int:
 def ensure_demo_users(db: Session) -> int:
     changed = 0
     for username, nickname, role in DEMO_USERS:
-        user = db.query(UserModel).filter_by(username=username).first()
+        user = db.query(User).filter_by(username=username).first()
         if not user:
-            db.add(UserModel(username=username, password_hash=hash_password(f"{username}123"),
-                             nickname=nickname, email=f"{username}@car2026.local", role=role, status="active"))
+            db.add(User(username=username, password_hash=hash_password(f"{username}123"),
+                        nickname=nickname, email=f"{username}@car2026.local", role=role, status="active"))
             changed += 1
             continue
         if not verify_password(f"{username}123", user.password_hash):
@@ -243,12 +243,12 @@ def import_users(db: Session) -> int:
     imported = 0
     for r in load_csv("user.csv"):
         username = clean_text(r.get("username"), 50)
-        if not username or db.query(UserModel).filter_by(username=username).first():
+        if not username or db.query(User).filter_by(username=username).first():
             continue
-        db.add(UserModel(username=username, password_hash=hash_password(f"{username}123"),
-                         nickname=clean_text(r.get("nickname"), 100) or username,
-                         email=clean_text(r.get("email"), 120) or None,
-                         role=clean_text(r.get("role"), 30) or "user", status="active"))
+        db.add(User(username=username, password_hash=hash_password(f"{username}123"),
+                    nickname=clean_text(r.get("nickname"), 100) or username,
+                    email=clean_text(r.get("email"), 120) or None,
+                    role=clean_text(r.get("role"), 30) or "user", status="active"))
         imported += 1
     db.commit()
     return imported + ensure_demo_users(db)
@@ -266,7 +266,7 @@ def main():
     db = SessionLocal()
     try:
         if fresh:
-            for table in [SalesPrediction, Review, RegionalSales, EnergySales, BrandSales, CarSales, Car, Brand, Region, UserModel]:
+            for table in [SalesPrediction, Review, RegionalSales, EnergySales, BrandSales, CarSales, Car, Brand, Region, User]:
                 db.query(table).delete()
             db.commit()
         if db.query(F.count(Car.id)).scalar():
