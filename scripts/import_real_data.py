@@ -21,7 +21,7 @@ DATA_DIR = ROOT / "data" / "real"
 
 from app.database.session import SessionLocal
 from app.models import *
-from app.core.security import get_password_hash, verify_password
+from app.core.security import hash_password, verify_password
 
 ENERGY_MAP = {
     "燃油": "fuel", "汽油": "fuel", "纯电": "ev", "纯电动": "ev",
@@ -216,12 +216,12 @@ def ensure_demo_users(db: Session) -> int:
     for username, nickname, role in DEMO_USERS:
         user = db.query(UserModel).filter_by(username=username).first()
         if not user:
-            db.add(UserModel(username=username, password_hash=get_password_hash(f"{username}123"),
+            db.add(UserModel(username=username, password_hash=hash_password(f"{username}123"),
                              nickname=nickname, email=f"{username}@car2026.local", role=role, status="active"))
             changed += 1
             continue
         if not verify_password(f"{username}123", user.password_hash):
-            user.password_hash = get_password_hash(f"{username}123")
+            user.password_hash = hash_password(f"{username}123")
             changed += 1
         if user.role != role:
             user.role = role
@@ -245,7 +245,7 @@ def import_users(db: Session) -> int:
         username = clean_text(r.get("username"), 50)
         if not username or db.query(UserModel).filter_by(username=username).first():
             continue
-        db.add(UserModel(username=username, password_hash=get_password_hash(f"{username}123"),
+        db.add(UserModel(username=username, password_hash=hash_password(f"{username}123"),
                          nickname=clean_text(r.get("nickname"), 100) or username,
                          email=clean_text(r.get("email"), 120) or None,
                          role=clean_text(r.get("role"), 30) or "user", status="active"))
