@@ -31,10 +31,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：只允许明确配置的可信 Origin。
+# CORS：保留已配置的可信 Origin，同时允许 Vercel 的 *.vercel.app 生产域名。
+# 前端通过 Vercel /api Rewrite 访问 Render，因此不要求浏览器直接暴露 Render API。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https://[A-Za-z0-9-]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
@@ -53,6 +55,7 @@ async def cors_preflight_middleware(request: Request, call_next):
 
     Render/代理层若让 OPTIONS 请求绕过 Starlette 的正常路由流程，浏览器会把
     后续 POST 直接拦截。对于可信前端 Origin，直接返回 204 并补齐预检响应头。
+    Vercel 域名由 CORSMiddleware 的 allow_origin_regex 继续处理。
     正常请求仍交给 CORSMiddleware 和 FastAPI 处理。
     """
     if request.method == "OPTIONS":
